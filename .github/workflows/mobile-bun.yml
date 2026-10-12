@@ -186,3 +186,45 @@ jobs:
           cmp out-node/index.android.bundle out-bun/index.android.bundle
           diff -r out-node/assets out-bun/assets
           diff -r web-node web-bun
+
+  # Next Expo SDK (expo@next, SDK 58): the toolchain on a copy of the example upgraded with `expo install --fix`.
+  # The example's own code targets SDK 57 (typecheck/Jest are not run here); this checks bundling only.
+  sdk-next:
+    runs-on: ubuntu-latest
+    needs: checks
+    continue-on-error: true # SDK prereleases move; a failure here is a signal, not a blocker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - uses: actions/setup-node@v4 # real Node used ONLY as the reference
+        with:
+          node-version: 22
+      - name: Example copy on expo@next with the packed package
+        run: |
+          bun pm pack --destination "$RUNNER_TEMP"
+          APP="$RUNNER_TEMP/next" && mkdir -p "$APP" && cp -R example/. "$APP" && rm -rf "$APP/node_modules"
+          cd "$APP"
+          bun -e 'const fs=require("fs");const p=JSON.parse(fs.readFileSync("package.json"));delete p.scripts.postinstall;p.dependencies.expo="next";fs.writeFileSync("package.json",JSON.stringify(p,null,2))'
+          bun install
+          bun x expo install --fix
+          RN="$(bun -p 'require("react-native/package.json").version')"
+          bun add -d "@react-native/metro-config@$RN" "@react-native/jest-preset@$RN" "$RUNNER_TEMP"/bun-react-native-*.tgz
+          echo "APP=$APP" >> "$GITHUB_ENV"
+      - run: bunx bun-react-native doctor
+        working-directory: ${{ env.APP }}
+      - name: Metro on Bun = Metro on Node (Android release bundle)
+        working-directory: ${{ env.APP }}
+        run: |
+          NODE="$(command -v node)"; ENTRY="$(bun -p "require.resolve('expo-router/entry')")"
+          for rt in node bun; do
+            mkdir -p out-$rt/assets tmp-$rt
+            if [ $rt = node ]; then RUN="$NODE node_modules/expo/bin/cli"; else RUN="bun expo"; fi
+            TMPDIR=$PWD/tmp-$rt $RUN export:embed --platform android --dev false --minify false --entry-file "$ENTRY" \
+              --bundle-output out-$rt/index.android.bundle --assets-dest out-$rt/assets --reset-cache
+          done
+          cmp out-node/index.android.bundle out-bun/index.android.bundle
+          diff -r out-node/assets out-bun/assets
+      - run: bun expo export --output-dir dist
+        working-directory: ${{ env.APP }}

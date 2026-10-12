@@ -62,8 +62,13 @@ export function usesMetroEngine(projectRoot: string, command: string): boolean {
   return true;
 }
 
+/** Expo SDK majors the Bun bundler is verified with (SDK 58 changed web chunking and the .routes.json export) */
+const BUN_BUNDLER_SDKS = [57];
+
 function decide(root: string): MetroEngineDecision {
   const req = createRequire(path.join(root, 'package.json'));
+  const sdk = Number(String(req('expo/package.json').version).split('.')[0]);
+  if (!BUN_BUNDLER_SDKS.includes(sdk)) return { engine: 'metro', reasons: [`Expo SDK ${sdk} (the Bun bundler supports SDK ${BUN_BUNDLER_SDKS.join(', ')})`] };
   const { exp } = req('@expo/config').getConfig(root, { skipSDKVersionRequirement: true });
   if (exp?.experiments?.reactServerFunctions || exp?.experiments?.reactServerComponentRoutes) {
     return { engine: 'metro', reasons: ['React Server Components'] };

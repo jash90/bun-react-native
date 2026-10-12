@@ -4,7 +4,7 @@
 // bunfig `preload` to worker threads (oven-sh/bun#44947), so each thread loads tools/bun/node-compat.preload.js
 // itself, then runs Metro's own Worker.js - transforms, cache keys and results are Metro's.
 //
-// Installed from metro.config.js: Transformer.js reads `require('./WorkerFarm').default` when Metro creates the
+// Installed by tools/bun-bundler/metro-on-bun.ts: Transformer.js reads `require('./WorkerFarm').default` when Metro creates the
 // bundler, so replacing that export before then is enough. METRO_BUN_WORKERS=0 keeps jest-worker.
 'use strict';
 const path = require('node:path');
@@ -28,13 +28,16 @@ function installIn(metroDir) {
   // the thread runs the Worker.js of the same Metro copy
   const workerPath = path.join(metroDir, 'src', 'DeltaBundler', 'Worker.js');
 
-  class BunWorkerFarm extends MetroWorkerFarm {
+  // Not `extends`: Metro's constructor resolves and requires its Worker.js in this thread (maxWorkers 1) or forks
+  // jest-worker - neither is used here, and under load Bun failed that require.resolve('./Worker.js') when Expo's web
+  // static rendering created two bundlers at once (CI, linux x64). The prototype still provides Metro's error
+  // formatting (_formatBabelError, _formatGenericError).
+  class BunWorkerFarm {
     static isBunWorkerFarm = true;
 
     constructor(config, transformerConfig) {
-      // maxWorkers 1 -> Metro's in-process Worker, no farm
-      super({ ...config, maxWorkers: 1 }, transformerConfig);
       this._config = config;
+      this._transformerConfig = transformerConfig;
       this._threads = [];
       this._queue = [];
       this._calls = new Map();
@@ -100,6 +103,7 @@ function installIn(metroDir) {
     }
   }
 
+  Object.setPrototypeOf(BunWorkerFarm.prototype, MetroWorkerFarm.prototype);
   metroFarm.default = BunWorkerFarm;
 }
 

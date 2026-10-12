@@ -13,7 +13,8 @@ runs on Hermes.
   cannot take, such as React Server Components or unsupported `metro.config.js` changes, stay on Metro.
 - **No script changes.** You keep using `bun expo start`, `bun expo run:ios`, `bun expo export` and `bun run test`.
 
-Verified with Expo SDK 57 (React Native 0.86) and Bun 1.4.3. SDK 58 support is in progress.
+Verified with Bun 1.4.3 on Expo SDK 57 (React Native 0.86), and on SDK 58 (`expo@next`, React Native 0.88 RC) for
+Metro on Bun. The Bun bundler (`RN_BUNDLER=bun`) supports SDK 57; on SDK 58 it falls back to Metro.
 
 Created in [T3 Code](https://t3.codes).
 

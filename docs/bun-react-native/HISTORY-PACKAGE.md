@@ -47,3 +47,18 @@ npm po v1 (do tego czasu `github:jash90/bun-react-native`); zgłoszenie błędó
    (0 różnic), `prebuild` iOS z `NODE_BINARY` = Bun. Jeden pojedynczy eksport web na Bunie (terser, czysty cache) wyszedł
    inny (1212 zamiast 1213 modułów) i nie dał się powtórzyć w 5 kolejnych przebiegach — obserwacja otwarta, CI porównuje
    web Node vs Bun przy każdej zmianie.
+
+**Po pierwszym CI (PR #1) i SDK 58:**
+1. Buildy Release iOS/Android w nowym układzie zielone w CI (`android`, `ios`), job `consumer` zielony.
+2. `bundle-determinism` (linux x64, Node 22 na PATH): eksport web na Bunie padał z `Cannot find module './Worker.js'`
+   (KNOWN-ISSUES #22) — odtworzone w kontenerze amd64 z Node (losowe: ten sam wariant raz pada, raz nie); poprawka:
+   farma wątków bez konstruktora `WorkerFarm` Metro (który dodatkowo ładował transformer do głównego wątku).
+3. SDK 58 (`expo@next` 58.0.7, RN 0.88.0-rc.4, Metro 0.87.1, kopia przykładu po `expo install --fix`): Metro na Bunie
+   — `export:embed` Android i bundle dev = Node bajt w bajt, `expo export` natywne = Node (poza `.hbc`, #16); web:
+   te same moduły, inne ID (#21). Bundler Buna na SDK 58: poprawione `packedMap` (usunięty w SDK 58) i tryb `.env`
+   (Expo CLI 58 bierze `mode` jawnie); natywna część eksportu zgodna (assety identyczne, `metadata.json` różni się
+   tylko kolejnością platform — niedeterminizm Expo, `compare` porównuje ją teraz semantycznie), ale web SDK 58 ma
+   inny podział na chunki i `_expo/.routes.json` → przy `RN_BUNDLER=bun` SDK 58 zostaje na Metro (komunikat z
+   powodem). Typecheck i Jest przykładu na SDK 58 padają tak samo na Node (kod aplikacji pod API SDK 57).
+4. CI: job `sdk-next` (`expo@next`, `continue-on-error`) — `doctor`, `export:embed` Android Node vs Bun, `expo export`.
+

@@ -39,7 +39,15 @@ for (const f of [...metroFiles.keys()].sort()) {
   const a = fs.readFileSync(path.join(metroDir, metroFiles.get(f)!));
   const b = fs.readFileSync(path.join(bunDir, bunFile));
   const textual = /\.(html|json)$/.test(f);
-  const same = textual ? a.toString().replace(HASHED, '$1-X') === b.toString().replace(HASHED, '$1-X') : a.equals(b);
+  const norm = (buf: Buffer) => {
+    const text = buf.toString().replace(HASHED, '$1-X');
+    // Expo bundles the platforms in parallel and writes metadata.json's fileMetadata in completion order
+    if (f !== 'metadata.json') return text;
+    const meta = JSON.parse(text);
+    meta.fileMetadata = Object.fromEntries(Object.entries(meta.fileMetadata ?? {}).sort(([x], [y]) => x.localeCompare(y)));
+    return JSON.stringify(meta);
+  };
+  const same = textual ? norm(a) === norm(b) : a.equals(b);
   if (!same) (differences++, console.log(`  differs: ${f}`));
 }
 for (const f of [...bunFiles.keys()].sort()) if (!metroFiles.has(f)) (differences++, console.log(`  only in Bun:   ${f}`));
