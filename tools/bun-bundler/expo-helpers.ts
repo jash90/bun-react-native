@@ -9,6 +9,8 @@ export function expoHelpers(projectRoot: string) {
   const cli = (m: string) => req(`@expo/cli/build/src/${m}`);
   return {
     req,
+    /** any `@expo/cli/build/src/<module>` */
+    cli,
     // export
     getFilesToExportFromServerAsync: cli('export/exportStaticAsync').getFilesToExportFromServerAsync,
     getHtmlFiles: cli('export/exportStaticAsync').getHtmlFiles,
@@ -56,3 +58,28 @@ export type ExportFiles = Map<
     assetId?: string;
   }
 >;
+
+/**
+ * Replace exports of an Expo CLI module (`@expo/cli/build/src/<module>`) for every later `require` of it; its other
+ * exports stay Expo's. Expo CLI's commands then run unchanged with the Bun bundler behind them.
+ */
+export function patchExpoCliModule(projectRoot: string, module: string, overrides: Record<string, (...args: any[]) => any>) {
+  const req = createRequire(path.join(projectRoot, 'package.json'));
+  const target = req.resolve(`@expo/cli/build/src/${module}`);
+  const original = req(target);
+  if (original.__bunBundler) return;
+  const patched: any = {};
+  for (const key of Object.keys(original)) Object.defineProperty(patched, key, { enumerable: true, configurable: true, get: () => original[key] });
+  Object.defineProperty(patched, '__esModule', { value: true });
+  Object.defineProperty(patched, '__bunBundler', { value: true });
+  for (const [key, value] of Object.entries(overrides)) Object.defineProperty(patched, key, { enumerable: true, value });
+  (req.cache as any)[target].exports = patched;
+}
+
+/**
+ * React Server Components / server functions (beta in Expo): Expo's implementation is bound to Metro's runtime and
+ * module ids, so these projects keep Metro as the bundler (still on the Bun runtime).
+ */
+export function usesReactServerComponents(exp: any): boolean {
+  return !!(exp?.experiments?.reactServerFunctions || exp?.experiments?.reactServerComponentRoutes);
+}

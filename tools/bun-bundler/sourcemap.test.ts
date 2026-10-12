@@ -3,7 +3,7 @@ import { describe, expect, test } from 'bun:test';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 
-import { PRELUDE_SOURCE, appendDebugId, concatPieces, debugIdFor, devClientMap, finalizeMap, relativeSources } from './sourcemap';
+import { PRELUDE_SOURCE, appendDebugId, concatPieces, debugIdFor, devClientMap, finalizeMap, relativeSources, replaceInGenerated } from './sourcemap';
 
 const root = process.cwd();
 const req = createRequire(path.join(root, 'package.json'));
@@ -66,4 +66,16 @@ test('debug ids: Expo stringToUUID of the file stem; spliced into finished maps'
   const id = debugIdFor('entry-76d2910352cfe2dca69abeba0c1a8a2a', req);
   expect(id).toBe('bb3e99a3-f3f0-4df7-83e8-3c43b9808687'); // the id Metro wrote for that bundle
   expect(JSON.parse(appendDebugId('{"version":3}', id))).toEqual({ version: 3, debugId: id });
+});
+
+test('replaceInGenerated: renamed chunk names shift the columns behind them on the same line', () => {
+  const code = 'import"./a-1.js";f();import("./b-2.js").then(g)\nh()';
+  // segments at f (col 17), g (col 45) on line 0 and h on line 1
+  const map = { version: 3, sources: ['/s.js'], names: [], mappings: encode([[[17, 0, 0, 0], [45, 0, 0, 9]], [[0, 0, 1, 0]]]) };
+  const out = replaceInGenerated(code, map, new Map([['a-1.js', '__common-0123.js'], ['b-2.js', 'route-45.js']]), req);
+  expect(out.code).toBe('import"./__common-0123.js";f();import("./route-45.js").then(g)\nh()');
+  const [line0, line1] = decode(out.map!.mappings);
+  expect(out.code.indexOf('f()')).toBe(line0[0][0]);
+  expect(out.code.indexOf('g)')).toBe(line0[1][0]);
+  expect(line1[0][0]).toBe(0);
 });

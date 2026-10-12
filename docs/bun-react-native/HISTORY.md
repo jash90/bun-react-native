@@ -211,6 +211,59 @@ porównana punkt po punkcie z `tools/bun-bundler`, każda różnica sprawdzona e
    v98; aplikacja na symulatorze: ekran główny i zakładka Explore. Mapy jak w skrypcie RN (`hermesc
    -output-source-map` + `compose-source-maps.js`) — te same klucze co przy mapie Metro.
 
+## Etap 11 — Expo CLI jako interfejs: `expo start` z Expo Go, eager Release, nazwy chunków, RSC (`6ccba38`, …)
+
+Źródła: dokumentacja Expo (protokół Expo Updates v1, przewodnik React Server Components, `llms.txt`) i kod
+`@expo/cli` 57.0.28 (`BundlerDevServer`, `MetroBundlerDevServer`, middleware, `start/interface`, `export/embed`).
+Zasada tej rundy: zamiast odtwarzać zachowanie Expo, uruchamiać kod Expo i podmieniać tylko części, które w Metro
+dotykają bundlera.
+
+1. **`bun run start` = `expo start`** (`6ccba38`). Własny interfejs terminala z etapu 10 usunięty. `cli.ts` uruchamia
+   binarkę Expo CLI, a `MetroBundlerDevServer` w `require.cache` zastępuje `BunBundlerDevServer` (podklasa
+   `BundlerDevServer`). Expo daje wtedy wszystko poza bundlerem: QR, `s` (Expo Go ↔ development build), `a/i`
+   (wybór i uruchomienie urządzenia, pobranie Expo Go), tunel, Bonjour, sprawdzanie zależności, typy tras. Middleware
+   Expo (manifest Expo Go i dev clientów, `/_expo/*`) działa na wewnętrznym `node:http` + `connect`, a `Bun.serve`
+   przekazuje do niego te ścieżki (test: `fetch` w Bunie zachowuje nagłówek `Host`). Doszło też CORS Expo: obce
+   originy były wcześniej przyjmowane, teraz dostają 500 jak w Metro. `/message` ma pełny protokół Expo. Watcher
+   Metro dla typów tras odtworzony z watchera Buna.
+   Błąd po drodze: Expo Go wysyła `/status` bez nagłówka `Host`, więc `request.url` w Bunie jest względny i
+   `new URL()` rzucał wyjątek. Poprawka: przebudowanie żądania z bazowym URL.
+   Weryfikacja: Expo Go SDK 57 (pobrany przez Expo po klawiszu `i`) uruchamia aplikację z serwera Buna (manifest,
+   bundle, menu Expo Go, Reload, Fast Refresh po edycji `index.tsx`); manifest i kody `/_expo/*` identyczne z
+   `expo start` na Metro (porównanie na porcie 8091); build dev `dev.poc.bunrn` nadal działa.
+2. **`export` / `export:embed` = komendy Expo.** Wspólny mechanizm `patchExpoCliModule` podmienia eksporty
+   `export/exportApp` (`exportAppAsync`) i `export/embed/exportEmbedAsync` (`exportEmbedAsync`,
+   `exportEmbedInternalAsync`). Expo parsuje argumenty, wyświetla pomoc i godzi prebundle „eager”; reszta modułu
+   (używana przez `expo-updates`) zostaje Metro. Eksport serwera przy `web.output: "server"` idzie przez
+   `exportStandaloneServerAsync` Expo z fasadą, która bundluje trasy API Bunem (`exportApiRoutesAsync`).
+   Przy okazji: `engine: hermes` i profil `hermes-stable` były ustawione na sztywno dla platform natywnych; teraz,
+   jak w Expo, zależą od Hermesa (JSC: `default`), a `--unstable-transform-profile` jest honorowany.
+3. **Prebundle „eager” Release.** `tools/bun/expo-cli.preload.js` zakłada tę samą podmianę w procesach
+   `bun expo run:*`/`export:embed`, więc prebundle przed `xcodebuild` robi Bun. `expo run:ios --configuration Release`:
+   „iOS Bundled … with Bun” przed „Planning build”, potem build, instalacja i uruchomienie aplikacji. Ustalenie z
+   `.expo/xcodebuild.log`: klucz eager i klucz fazy Xcode różnią się tylko o `"skipServer":false` — to błąd Expo SDK 57
+   (KNOWN-ISSUES #15), także na Metro, więc faza Xcode bundluje drugi raz (u nas ~1 s).
+   Problem po drodze: komendy wisiały po zakończeniu pracy. Bisekcja: zakończenie procesu blokował sam import
+   `web.ts`, a dalej `transform-worker.ts`, który przy imporcie ustawia `self.onmessage` — w wątku głównym Buna to
+   aktywny nasłuch. Zabezpieczenie Expo (`ensureProcessExitsAfterDelay`) nie zadziałało, bo
+   `process.getActiveResourcesInfo()` w Bunie zwraca `[]` (KNOWN-ISSUES #14). Poprawka: `if (!Bun.isMainThread)`;
+   wcześniejszy `process.exit` w CLI był obejściem tego samego błędu.
+   Problem środowiska (nie bundlera): pierwszy w PATH `/usr/local/bin/pod` (Ruby 2.6) jest uszkodzony; Expo zainstalował
+   wtedy gem `cocoapods` do Rubiego z Homebrew. Test z `/opt/homebrew/bin` na początku PATH.
+   Gradle `createBundleReleaseJsAndAssets` przechodzi przez nową ścieżkę (Android 6,5 s, mapa złożona z Hermesem).
+4. **Nazwy chunków web** jak w Metro: `<trasa>-<md5>.js`, `__common-<md5>.js`, `__expo-metro-runtime-<md5>.js`.
+   Odwołania między chunkami przepisywane razem z przesunięciem kolumn map (`replaceInGenerated`; kod jest w jednej
+   linii). W przeglądarce wszystkie chunki ładują się (200), konsola czysta, mapy trafiają w `explore.tsx:102:29`.
+   Różnica, która zostaje: Bun dzieli wspólny kod na kilka plików `__common-*`, Metro na jeden.
+5. **React Server Components.** Analiza `createServerComponentsMiddleware` Expo pokazała ścisłe związanie z Metro:
+   - serwer i klient współdzielą numeryczne ID modułów;
+   - moduły `react-server` są wykonywane jako bundle Metro w Node;
+   - granice klienta to leniwe bundle `.bundle?…&resolver.clientboundary=true&xRSC=1`;
+   - do tego manifesty akcji serwerowych i eksport payloadów `_flight`.
+   Zamiast błędu `start`, `export` i `export:embed` same przełączają takie projekty na Metro (na runtime Buna).
+   Sprawdzone na fiksturze z `react-server-dom-webpack` 19.2.8 i funkcją `'use server'`: eksport przez nasze CLI
+   tworzy `/_flight/[...rsc]`. Przeniesienie RSC na bundler Buna to osobny, wielodniowy projekt.
+
 ---
 
 ## Jak powtórzyć weryfikację

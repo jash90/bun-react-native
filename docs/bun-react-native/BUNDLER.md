@@ -29,9 +29,10 @@ Dzięki temu wynik ma ten sam układ co `expo export` — sprawdzone plik po pli
 | `web-dev.ts` | trasy web dev servera: `single` → szablon Expo; `static`/`server` → handler `expo-server` (adapter Bun) z SSR każdej strony, trasami API i middleware; `public/`, generowany `favicon.ico` | `createRouteHandlerMiddleware`, `getStaticPageAsync` |
 | `web-export.ts` | eksport web: `single`, `static` (prerender każdej trasy, w tym `[param].html`, `generateStaticParams`, warianty grup), `server` (`dist/client` + `dist/server`, `_expo/functions/*.js`, `_expo/routes.json`, tryb SSR `unstable_useServerRendering`) | `exportFromServerAsync` |
 | `export.ts` | `expo export`: natywne bundle → bytecode Hermes `_expo/static/js/<platforma>/entry-<md5>.hbc`, `assets/<md5>`, `metadata.json` (EAS Update), `assetmap.json`; orkiestracja platform | `exportAppAsync` |
-| `cli.ts` | `export:embed`, `export` (flagi i domyślne platformy z `resolveOptionsAsync` Expo, `--clear`), `start [-p port] [--clear] [-i/-a/-w]` | `@expo/cli` |
-| `terminal.ts` | klawisze `bun run start` jak `expo start`: `r` reload, `m` menu dev, `shift+m` inspektor elementów, `j` React Native DevTools (`JsInspector` Expo), `i`/`a` otwarcie zainstalowanego buildu dev (symulator / `adb reverse` + emulator), `w` web, `o` edytor, `c`, `?`, Ctrl+C | `@expo/cli` `start/interface` |
-| `embed.ts` | `export:embed` jak `exportEmbedAsync` Expo: domyślne `--dev true` i wejście z `package.json`, usunięcie starego bundla (i kopii w `.app`), `--bytecode`, `--sourcemap-use-absolute-path`, `--sourcemap-sources-root`, `--bundle-encoding`, `--max-workers`, adnotacje `sourceMappingURL`/`debugId`, błędy w formacie Xcode | `@expo/cli/build/src/export/embed` |
+| `cli.ts` | uruchamia binarkę Expo CLI (`start`, `export`, `export:embed`/`bundle`) po podmianie modułów bundlera Expo na Buna — argumenty, pomoc, walidacja i UI są Expo; projekty z RSC zostają przy Metro | `@expo/cli` |
+| `expo-dev-server.ts` | `bun run start` = `expo start`: `BunBundlerDevServer` (podklasa `BundlerDevServer` Expo) zamiast `MetroBundlerDevServer` — QR, klawisze `s/a/i/w/r/j/m/o/c/?`, Expo Go (pobranie i uruchomienie) i development buildy, tunel, Bonjour, typy tras; middleware Expo (manifest Expo Go / dev clientów, `/_expo/loading`, `/_expo/link`, `/_expo/plugins`, `/_expo/open`, `/_expo/touch`, `/_expo/error-overlay-meta`, `/_expo/debugger`) na wewnętrznym `node:http` + `connect`, CORS Expo dla każdego żądania | `MetroBundlerDevServer`, `instantiateMetro` |
+| `message-socket.ts` | `/message` w protokole Expo (`getid`, `getpeers`, żądania między klientami, broadcast tylko `reload`/`devMenu` od zaufanych klientów); `/expo-dev-plugins/broadcast` | `createMessageSocket`, `DevToolsPluginWebsocketEndpoint` |
+| `embed.ts` | `export:embed`: moduł `exportEmbedAsync` Expo przepięty na Buna (`installBunExportEmbed`) — Expo parsuje argumenty i godzi bundle „eager”; Bun robi bundle, mapę, assety, `--bytecode`, eksport serwera (`web.output: "server"` → `.expo/server/<platform>`), komponenty DOM, błędy w formacie Xcode. `tools/bun/expo-cli.preload.js` zakłada to samo w procesach `expo run:*`/`export:embed`, więc prebundle „eager” robi Bun | `@expo/cli/build/src/export/embed` |
 | `env.ts` | pliki `.env` jak Expo CLI (`.env.<tryb z --dev>`, zmienne z powłoki wygrywają, przeładowanie w dev); automatyczne wczytywanie Buna wyłączone (`bunfig.toml` `env = false`) | `@expo/cli` `utils/nodeEnv`, `@expo/env` |
 | `sourcemap.ts` | mapy w kształcie Expo: prelude/polyfille/graf sklejone z mapowaniami, źródła `/` względem roota serwera, `?ctx=` dla `require.context`, `x_google_ignoreList`, `x_facebook_sources`, `debugId`; mapy dev jak w Metro (ścieżki bezwzględne) | `@expo/metro-config` `serializer/sourceMap`, `metro-source-map` Generator |
 | `plugins/with-bun-bundler.js` | iOS: `CLI_PATH` w `ios/.xcode.env`; Android: `cliFile` w `app/build.gradle` | — |
@@ -43,10 +44,10 @@ natywnych jest ignorowane (klucz po treści); wymuszenie: `BUN_BUNDLER_HONOR_RES
 ## Użycie
 
 ```bash
-bun run start                 # dev server :8081: iOS, Android, web (SSR + trasy API), Fast Refresh; DevTools: http://localhost:8081/open-debugger
+bun run start                 # = expo start z serwerem Buna: QR, Expo Go / development build, klawisze s/a/i/w/r/j/m/o/?, web SSR + trasy API
 bun run web                   # to samo + otwiera przeglądarkę
 bun run export                # expo export na Bunie: platformy z configu Expo (iOS + Android + web) -> dist/
-bun run export --platform ios --platform android --dump-assetmap --source-maps   # te same flagi co expo export
+bun run export --platform ios --platform android --dump-assetmap --source-maps   # = expo export (te same flagi, pomoc: --help)
 bun run export:web            # tylko web (wg web.output: single / static / server)
 bun run ios | bun run android # build Debug bez uruchamiania Metro (--no-bundler)
 RN_BUNDLER=metro …             # ta sama komenda przez Metro (@expo/cli)
@@ -115,22 +116,26 @@ z cache po treści — faza bundlowania w buildzie Xcode: **1,04 s**. Dev server
   false` (bezpośrednio i przez shim) i OTA, z `.env.development` w dev (z przeładowaniem) — jak Metro; `--bytecode` jak
   Metro; mapy embed/OTA/web z tymi samymi kluczami co Metro (`debugId`, `x_google_ignoreList`, `x_facebook_sources`,
   prelude/polyfille), bez bezwzględnych ścieżek dysku, te same pozycje źródłowe co Metro; mapy dev jak Metro.
-- Testy: `bun run test:tools` — 36 testów (resolver i warstwy Expo, rekordy assetów Metro, szablon `require.context`,
+- **`expo start` / Expo Go / eager / nazwy chunków** (piąta runda): Expo Go SDK 57 na symulatorze ładuje aplikację z
+  serwera Buna (manifest, bundle, menu Expo Go, reload, Fast Refresh); manifesty i odpowiedzi `/_expo/*` jak z Metro;
+  `expo run:ios --configuration Release` — prebundle i faza Xcode przez Buna, aplikacja uruchomiona; Gradle
+  `createBundleReleaseJsAndAssets` przez komendę Expo; eksport web z `asyncRoutes` z nazwami Metro ładuje się w
+  przeglądarce bez błędów; projekt z `reactServerFunctions` eksportuje się przez Metro z naszego CLI.
+- Testy: `bun run test:tools` — 39 testów (resolver i warstwy Expo, rekordy assetów Metro, szablon `require.context`,
   kolejność grafu, minifier).
 
 ## Ograniczenia (stan obecny)
 
 | Ograniczenie | Skutek | Obejście |
 |---|---|---|
-| React Server Components / server functions (`experiments.reactServerComponentRoutes`, `reactServerFunctions`, beta w Expo) | `export` kończy się czytelnym błędem; wymagają `react-server-dom-webpack` (nie ma go w projekcie) | `bun run export:metro`, `bun run start:metro` |
+| React Server Components / server functions (`experiments.reactServerComponentRoutes`, `reactServerFunctions`, beta w Expo) | implementacja Expo jest związana z runtime i ID modułów Metro (moduły `react-server` wykonywane jako bundle Metro w Node, granice klienta jako leniwe bundle `xRSC`); `start`, `export` i `export:embed` same przełączają takie projekty na Metro (na runtime Buna) | — (automatycznie) |
 | Tryb ścisły: Bun łączy moduły w jedną funkcję IIFE, więc bundler wstawia na jej początek `"use strict"` (Metro dodaje go do każdego modułu ES) | moduły czysto CommonJS, które w Metro działają w trybie nieścisłym, u nas są ścisłe (np. przypisanie do niezadeklarowanej zmiennej rzuca wyjątek) | kod modułu poprawić albo przenieść do ES |
 | tvOS/macOS: rozwiązywanie, rozszerzenia, autolinking i pakiet hosta są przeniesione z Expo, ale bez `react-native-tvos`/`react-native-macos` w projekcie niesprawdzone na urządzeniu | — | — |
-| Z `asyncRoutes` eksport web ładuje wejście jako `<script type="module">` (chunki ES Buna), Metro — klasyczne skrypty | te same trasy i pliki statyczne, inne nazwy chunków JS; z `unstable_useServerRendering` bez dzielenia (lista skryptów expo-server to klasyczne skrypty) | — |
+| Z `asyncRoutes` eksport web ładuje wejście jako `<script type="module">` (chunki ES Buna), Metro — klasyczne skrypty | nazwy jak w Metro (`<trasa>-<md5>.js`, `__common-<md5>.js`, `__expo-metro-runtime-<md5>.js`, każdy z mapą), ale Bun dzieli wspólny kod na kilka plików `__common-*` (Metro na jeden); z `unstable_useServerRendering` bez dzielenia (lista skryptów expo-server to klasyczne skrypty) | — |
 | Arkusz atomowych stylów react-native-web w HTML przy loaderach | Expo renderuje strony równolegle przy wspólnym rejestrze stylów; przy loaderach przeplot różni się od Metro, więc lista klas `r-…` w `<style>` strony bywa inna (bez wpływu na działanie, wynik deterministyczny) | — |
 | Brak `inlineRequires`, inlinowania `Platform.OS`, constant folding Metro w produkcji | inny (mniejszy) kod; semantyka bez zmian | — |
 | Importy nazw, których moduł nie eksportuje (typy TS re-eksportowane bez `export type`) | Bun przerywa linkowanie | bundler dopisuje `export var X = void 0` (semantyka Metro: `undefined`) i linkuje ponownie |
-| Expo Go: serwer nie serwuje manifestu Expo (`/` z `expo-platform`, `ExpoGoManifestHandlerMiddleware`) | Expo Go nie połączy się z `bun run start`; buildy deweloperskie (`expo run:*`, z `expo-dev-client` lub bez) działają | `bun run start:metro` dla Expo Go |
-| `expo run:ios --configuration Release` / `run:android --variant release` najpierw bundlują Metro („eager”, wewnątrz Expo CLI, bez przełącznika) | Metro pracuje na próżno: `export:embed` Buna ignoruje ten wynik (skopiowanie wysłałoby bundle Metro) i bundluje od nowa | build Release przez `xcodebuild` / `./gradlew assembleRelease` (albo EAS Build) |
+| Błąd Expo SDK 57: klucz prebundla „eager” `expo run:* Release` nie zawiera `skipServer`, a klucz fazy Xcode/Gradle tak (`"skipServer":false`) | prebundle nigdy nie pasuje i faza natywna bundluje drugi raz — tak samo jak z Metro; u nas oba bundle robi Bun (~2 s) | — |
 | Proces CLI kończy się przez `process.exit` | zakończone `Worker`y / `Bun.build` potrafią trzymać pętlę zdarzeń (bez tego Xcode czekał bez końca) | — |
 
 Zachowania Expo (nie różnice Buna): trasa dynamiczna bez `generateStaticParams` przy `web.output: "static"` jest

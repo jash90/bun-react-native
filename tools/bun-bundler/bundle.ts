@@ -43,6 +43,8 @@ export interface BundleOptions {
   sourcemapSourcesRoot?: string;
   /** `--bundle-encoding` (utf8 | utf16le | ascii) */
   bundleEncoding?: BufferEncoding;
+  /** `--unstable-transform-profile` (default: hermes-stable with Hermes, default with JSC) */
+  transformProfile?: string;
   routerRoot?: string;
   workers?: number;
   resetCache?: boolean;

@@ -48,6 +48,11 @@ export interface ProjectOptions {
   loaderBundle?: boolean;
   /** DOM component bundle: the `"use dom"` file (relative import from expo/dom/entry.js, URI-encoded) */
   dom?: string;
+  /**
+   * babel-preset-expo `unstable_transformProfile` (`--unstable-transform-profile`); default like Expo export:embed:
+   * `hermes-stable` for Hermes, `default` for JSC and web
+   */
+  transformProfile?: string;
 }
 
 export type TransformFormat = 'esm' | 'metro';
@@ -267,8 +272,10 @@ export function createProject(opts: ProjectOptions) {
   const exp = opts.exp ?? getExpoConfig(projectRoot);
   const routerRoot = opts.routerRoot ?? getRouterRoot(projectRoot, exp);
   const baseUrl = getBaseUrl(projectRoot, exp);
+  // Expo: `engine: hermes` (+ `bytecode` for Hermes exports) only when the platform uses Hermes; JSC gets neither
+  const isHermes = !isWeb && projectRequire('@expo/cli/build/src/export/exportHermes').isEnableHermesManaged(exp, platform);
   const customTransformOptions: Record<string, string> = {
-    ...(isWeb ? {} : { engine: 'hermes', bytecode: '1' }),
+    ...(isHermes ? { engine: 'hermes', bytecode: '1' } : {}),
     ...(isServer ? { environment: 'node' } : {}),
     routerRoot,
     reactCompiler: String(!!exp.experiments?.reactCompiler),
@@ -333,10 +340,12 @@ export function createProject(opts: ProjectOptions) {
     : [...rnPolyfills, EXTERNAL_REQUIRE_POLYFILL, ENV_VARS_POLYFILL, resolveFromRoot('expo/virtual/streams.js')];
 
   // ---- Babel worker pool + transform cache (Bun.hash + Bun.file/Bun.write)
+  const transformProfile = opts.transformProfile ?? (isHermes ? 'hermes-stable' : 'default');
   const pool = new TransformPool(opts.workers ?? Math.max(1, (navigator.hardwareConcurrency ?? 4) - 1));
   const cacheDir = path.join(projectRoot, 'node_modules', '.cache', 'bun-rn-bundler', `${platform}${isServer ? '-server' : ''}-${dev ? 'dev' : 'prod'}`);
   fs.mkdirSync(cacheDir, { recursive: true });
   const cacheSalt = JSON.stringify({
+    transformProfile,
     v: BUNDLER_CACHE_VERSION,
     customTransformOptions,
     minify,
@@ -357,7 +366,7 @@ export function createProject(opts: ProjectOptions) {
         return (await cached.json()) as TransformResponse;
       }
     }
-    const res = await pool.run({ filename, src: source, projectRoot, platform, dev, minify, type, format, customTransformOptions });
+    const res = await pool.run({ filename, src: source, projectRoot, platform, dev, minify, type, format, customTransformOptions, transformProfile });
     if (res.error) throw new Error(res.error);
     stats.transformed++;
     await Bun.write(cacheFile, JSON.stringify({ code: res.code, map: res.map, deps: res.deps, esmDeps: res.esmDeps, asyncDeps: res.asyncDeps, loaderReference: res.loaderReference, domComponentReference: res.domComponentReference, optionalDeps: res.optionalDeps, functionMap: res.functionMap }));

@@ -159,3 +159,31 @@ export function debugIdFor(fileStem: string, projectRequire: NodeRequire): strin
 export function appendDebugId(mapJson: string, debugId: string): string {
   return mapJson.slice(0, -1) + `,"debugId":${JSON.stringify(debugId)}}`;
 }
+
+/**
+ * Replace strings in generated code and shift the map's generated columns behind each replacement (renamed chunk
+ * file names inside minified one-line chunks).
+ */
+export function replaceInGenerated(code: string, map: RawMap | null, replacements: Map<string, string>, projectRequire: NodeRequire): { code: string; map: RawMap | null } {
+  if (!replacements.size) return { code, map };
+  const pattern = new RegExp([...replacements.keys()].map((k) => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).sort((a, b) => b.length - a.length).join('|'), 'g');
+  const lines = code.split('\n');
+  // per line: [end column of the replaced text in the original line, length delta]
+  const shifts: [number, number][][] = [];
+  const out = lines.map((line, i) =>
+    line.replace(pattern, (match, offset: number) => {
+      const next = replacements.get(match)!;
+      (shifts[i] ??= []).push([offset + match.length, next.length - match.length]);
+      return next;
+    })
+  );
+  if (!map?.mappings || !shifts.length) return { code: out.join('\n'), map };
+  const { decode, encode } = projectRequire('@jridgewell/sourcemap-codec');
+  const decoded: number[][][] = decode(map.mappings);
+  decoded.forEach((segments, i) => {
+    const lineShifts = shifts[i];
+    if (!lineShifts) return;
+    for (const seg of segments) seg[0] += lineShifts.reduce((sum, [end, delta]) => (seg[0] >= end ? sum + delta : sum), 0);
+  });
+  return { code: out.join('\n'), map: { ...map, mappings: encode(decoded) } };
+}

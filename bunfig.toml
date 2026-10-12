@@ -3,7 +3,7 @@
 
 # Node-compat shims loaded into every Bun process started here (CLI, Metro, Jest and forked workers;
 # NOT worker_threads - see metro.config.js).
-preload = ["./tools/bun/node-compat.preload.js", "./tools/bun/jest.preload.js"]
+preload = ["./tools/bun/node-compat.preload.js", "./tools/bun/jest.preload.js", "./tools/bun/expo-cli.preload.js"]
 
 # No automatic .env loading (like Node): the bundler and Expo CLI load .env.<mode> for the command's mode
 # themselves (tools/bun-bundler/env.ts); Bun would pick .env.development for release bundles.

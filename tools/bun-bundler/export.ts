@@ -15,9 +15,9 @@ import path from 'node:path';
 import { bundle } from './bundle';
 import { exportDomComponents } from './dom';
 import { loadProjectEnv } from './env';
-import { appendDebugId, debugIdFor } from './sourcemap';
-import { expoHelpers, type ExportFiles } from './expo-helpers';
+import { expoHelpers, patchExpoCliModule, usesReactServerComponents, type ExportFiles } from './expo-helpers';
 import { getBaseUrl, getExpoConfig } from './shared';
+import { appendDebugId, debugIdFor } from './sourcemap';
 import { md5 } from './web';
 import { exportWebAsync } from './web-export';
 
@@ -105,9 +105,6 @@ export async function exportAppAsync(opts: ExportOptions) {
   // like Expo CLI: force the environment, load .env files for EXPO_PUBLIC_* inlining
   loadProjectEnv(projectRoot, opts.dev ? 'development' : 'production', { force: true });
   const exp = getExpoConfig(projectRoot);
-  if (exp.experiments?.reactServerComponentRoutes || exp.experiments?.reactServerFunctions) {
-    throw new Error('React Server Components are not supported by the Bun bundler (use `bun run export:metro`)');
-  }
   const baseUrl = getBaseUrl(projectRoot, exp);
   const outputDir = path.resolve(projectRoot, opts.outputDir);
   fs.rmSync(outputDir, { recursive: true, force: true });
@@ -156,4 +153,20 @@ export async function exportAppAsync(opts: ExportOptions) {
   const parts = [native.length ? `${native.join(', ')} (EAS Update metadata.json)` : '', web ? `web (${web.output}, ${web.routes} HTML routes)` : ''].filter(Boolean);
   opts.log(`Exported ${parts.join(' + ')} in ${ms}ms with Bun -> ${outputDir}`);
   return { files: files.size, web, ms };
+}
+
+/**
+ * `expo export` = Expo CLI's own command (arguments, help, validation, output directory handling) with Expo's
+ * `export/exportApp` module re-pointed at exportAppAsync above. Projects with React Server Components keep Metro.
+ */
+export function installBunExportApp(projectRoot: string) {
+  if (usesReactServerComponents(getExpoConfig(projectRoot))) return;
+  patchExpoCliModule(projectRoot, 'export/exportApp', {
+    exportAppAsync: async (root: string, options: any) => {
+      const unsupported = options.platforms.filter((p: string) => !['ios', 'android', 'web', 'tvos', 'macos'].includes(p));
+      if (unsupported.length) throw new Error(`export: platform ${unsupported.join(', ')} is not supported by the Bun bundler`);
+      if (options.clear) fs.rmSync(path.join(root, 'node_modules', '.cache', 'bun-rn-bundler'), { recursive: true, force: true });
+      await exportAppAsync({ ...options, projectRoot: root, log: (m: string) => console.log(m) });
+    },
+  });
 }

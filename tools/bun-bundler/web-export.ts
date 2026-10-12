@@ -75,7 +75,7 @@ export function clientArtifacts(project: Project, build: WebBuildResult, opts: {
   const headPieces: MapPiece[] = [{ code: project.prelude(), source: PRELUDE_SOURCE }, ...polyfills];
   let runtimeName: string | null = null;
   if (split) {
-    runtimeName = `_expo/static/js/web/runtime-${md5(head)}.js`;
+    runtimeName = `_expo/static/js/web/__expo-metro-runtime-${md5(head)}.js`;
     // prelude + polyfills as a classic script (Metro: the `__expo-metro-runtime` chunk), with its own map
     const runtime = opts.sourceMaps ? mapFor(runtimeName, headPieces) : null;
     artifacts.push({ type: 'js', originFilename, filename: runtimeName, source: head + (runtime?.annotations ?? ''), metadata: jsMeta({ modulePaths: [] }) });
@@ -161,6 +161,45 @@ function addServerFile(files: ExportFiles, artifactFilename: string, contents: {
     });
   }
   files.set(artifactFilename, { ...descriptor, contents: src, targetDomain: 'server' });
+}
+
+/**
+ * Expo's exportExpoRouterApiRoutesAsync: middleware and API routes as server functions in `files`
+ * (`_expo/functions/...`); returns the routes manifest with the artifact file names.
+ */
+export async function exportApiRoutesAsync(opts: { project: Project; appDir: string; files: ExportFiles; includeSourceMaps: boolean }) {
+  const { project, appDir, files } = opts;
+  const h = expoHelpers(project.projectRoot);
+  const manifest = await h.fetchManifest(project.projectRoot, { ...(project.exp.extra?.router ?? {}), preserveRedirectAndRewrites: true, asJson: true, appDir });
+  if (!manifest) throw new Error('Unexpected error: server manifest could not be fetched.');
+  const bundleFn = (file: string) => buildServerFunction(project, file, { minify: project.minify });
+  const outputDir = '_expo/functions';
+  const artifactOf = (file: string) => path.join(outputDir, path.relative(appDir, file.replace(/\.[tj]sx?$/, '.js'))).split(path.sep).join('/');
+  if (manifest.middleware) {
+    const file = path.isAbsolute(manifest.middleware.file) ? manifest.middleware.file : path.join(appDir, manifest.middleware.file);
+    addServerFile(files, artifactOf(file), await bundleFn(file), { middlewareId: '/middleware' }, opts.includeSourceMaps);
+    manifest.middleware.file = artifactOf(file);
+  }
+  for (const route of manifest.apiRoutes) {
+    const file = path.isAbsolute(route.file) ? route.file : path.join(appDir, route.file);
+    addServerFile(files, artifactOf(file), await bundleFn(file), { apiRouteId: route.page }, opts.includeSourceMaps);
+    route.file = artifactOf(file);
+  }
+  return manifest;
+}
+
+/** Expo's getServerManifestAsync: the build-time server manifest and the route manifest of expo-router. */
+export async function getServerManifestAsync(opts: { projectRoot: string; exp: any; routerRoot: string; dev: boolean }) {
+  const server = createProject({ projectRoot: opts.projectRoot, platform: 'web', dev: opts.dev, environment: 'node', exp: opts.exp, routerRoot: opts.routerRoot });
+  let build: WebBuildResult;
+  try {
+    build = await buildWeb(server, [server.projectRequire.resolve('@expo/router-server/node/render.js')], { kind: 'render', minify: false });
+  } finally {
+    server.close();
+  }
+  const render = await importServerBundle(opts.projectRoot, build.code, 'render');
+  const routerOptions = opts.exp.extra?.router ?? {};
+  return { serverManifest: await render.getBuildTimeServerManifestAsync({ ...routerOptions }), htmlManifest: await render.getManifest({ ...routerOptions }) };
 }
 
 export async function exportWebAsync(opts: WebExportOptions) {
@@ -301,24 +340,9 @@ export async function exportWebAsync(opts: WebExportOptions) {
   // ---- server output: API routes, middleware, routes manifest (and the SSR render module)
   const publicPath = h.getPublicFolderPath(projectRoot);
   await h.copyPublicFolderAsync(publicPath, path.join(opts.outputDir, 'client'));
-  const routesManifest = await h.fetchManifest(projectRoot, { ...routerOptions, preserveRedirectAndRewrites: true, asJson: true, appDir });
-  if (!routesManifest) throw new Error('Unexpected error: server manifest could not be fetched.');
   const fnProject = createProject({ projectRoot, platform: 'web', dev, environment: 'node', exp, routerRoot, minify: opts.minify });
   try {
-    const bundleFn = (file: string) => buildServerFunction(fnProject, file, { minify: opts.minify });
-    const outputDir = '_expo/functions';
-    if (routesManifest.middleware) {
-      const file = path.isAbsolute(routesManifest.middleware.file) ? routesManifest.middleware.file : path.join(appDir, routesManifest.middleware.file);
-      const artifact = path.join(outputDir, path.relative(appDir, file.replace(/\.[tj]sx?$/, '.js'))).split(path.sep).join('/');
-      addServerFile(files, artifact, await bundleFn(file), { middlewareId: '/middleware' }, true);
-      routesManifest.middleware.file = artifact;
-    }
-    for (const route of routesManifest.apiRoutes) {
-      const file = path.isAbsolute(route.file) ? route.file : path.join(appDir, route.file);
-      const artifact = path.join(outputDir, path.relative(appDir, file.replace(/\.[tj]sx?$/, '.js'))).split(path.sep).join('/');
-      addServerFile(files, artifact, await bundleFn(file), { apiRouteId: route.page }, true);
-      route.file = artifact;
-    }
+    const routesManifest = await exportApiRoutesAsync({ project: fnProject, appDir, files, includeSourceMaps: true });
     const routesJson: any = { ...routesManifest, htmlRoutes: serverManifest.htmlRoutes };
     if (opts.skipSSG) {
       routesJson.htmlRoutes = [];

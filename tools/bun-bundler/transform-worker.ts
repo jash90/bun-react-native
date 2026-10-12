@@ -22,6 +22,8 @@ export interface TransformRequest {
   /** 'esm' (default): ES modules for Bun.build; 'metro': CommonJS module body for the Metro-format dev runtime. */
   format?: 'esm' | 'metro';
   customTransformOptions: Record<string, string>;
+  /** babel-preset-expo `unstable_transformProfile` (hermes-stable | hermes-canary | default) */
+  transformProfile?: string;
 }
 
 export interface TransformResponse {
@@ -260,7 +262,7 @@ function transform(req: TransformRequest): TransformResponse {
     type: req.type,
     experimentalImportSupport: true,
     inlineRequires: false,
-    unstable_transformProfile: req.platform === 'web' ? 'default' : 'hermes-stable',
+    unstable_transformProfile: req.transformProfile ?? (req.platform === 'web' ? 'default' : 'hermes-stable'),
     enableBabelRCLookup: undefined,
     enableBabelRuntime: b.babelRuntimeVersion,
     globalPrefix: '',
@@ -320,7 +322,9 @@ function transform(req: TransformRequest): TransformResponse {
   return { id: req.id, code: out.code, map: out.map, loaderReference, domComponentReference, optionalDeps, functionMap };
 }
 
-self.onmessage = (event: MessageEvent<TransformRequest>) => {
+// Only inside the Worker: modules import constants from this file, and a message listener on the main thread would
+// keep the bundler's process alive after its work is done.
+if (!Bun.isMainThread) self.onmessage = (event: MessageEvent<TransformRequest>) => {
   const req = event.data;
   let res: TransformResponse;
   try {

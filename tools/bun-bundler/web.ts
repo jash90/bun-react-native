@@ -14,7 +14,7 @@ import type { BunPlugin } from 'bun';
 
 import { getAssetData, type AssetData } from './assets';
 import { ASSET_REGISTRY_VIRTUAL } from './resolver';
-import type { FunctionMap } from './sourcemap';
+import { replaceInGenerated, type FunctionMap } from './sourcemap';
 import { ASSET_REGISTRY_SRC, MISSING_MODULE_NAMESPACE, metafileOrder, missingModuleSource, requireContextSource, strictIife, type Project } from './shared';
 import { REQUIRE_CONTEXT_PREFIX } from './transform-worker';
 
@@ -310,7 +310,28 @@ export async function buildWeb(project: Project, entries: string[], opts: WebBui
       imports: (meta?.imports ?? []).map((i: any) => path.basename(i.path)),
     });
   }
+  if (chunks.length) ({ code, map } = metroChunkNames(project, { code, map }, chunks, path.basename(ENTRY)));
   return { code, map, functionMaps, css, assets, modules: [...modules], chunks, loaderFiles: [...loaderFiles] };
+}
+
+/**
+ * Metro's names for split chunks (@expo/metro-config computeChunkFilenames): `<module name>-<md5>.js` for a route's
+ * chunk, `__common-<md5>.js` for shared modules (Bun names those after the entry). References between the chunks and
+ * from the entry are rewritten, their source maps shifted accordingly.
+ */
+function metroChunkNames(project: Project, entry: { code: string; map: any }, chunks: WebBuildResult['chunks'], entryName: string) {
+  const renamed = new Map<string, string>();
+  for (const chunk of chunks) {
+    const base = chunk.name.replace(/-[a-z0-9]{8}\.js$/, '');
+    renamed.set(chunk.name, `${base === entryName ? '__common' : base}-${md5(chunk.code)}.js`);
+  }
+  const rewrite = (c: { code: string; map: any }) => replaceInGenerated(c.code, c.map, renamed, project.projectRequire);
+  for (const chunk of chunks) {
+    Object.assign(chunk, rewrite(chunk));
+    chunk.name = renamed.get(chunk.name)!;
+    chunk.imports = chunk.imports.map((i) => renamed.get(i) ?? i);
+  }
+  return rewrite(entry);
 }
 
 /** Compose Bun's map (bundle -> Babel output) with the per-file Babel maps (Babel output -> source). */

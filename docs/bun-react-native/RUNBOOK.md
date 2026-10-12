@@ -58,13 +58,14 @@ Xcode + CocoaPods (iOS), JDK 17 + Android SDK (Android) — bez zmian względem 
 | `bunfig.toml` | katalog aplikacji | `preload` dla każdego procesu Buna, `env = false`; w monorepo dodaj `[install] linker = "hoisted"` |
 | `tools/bun/node-compat.preload.js` | repo | sortowanie `fs.readdir*` jak w Node |
 | `tools/bun/jest.preload.js` | repo | Jest pod Bunem zachowuje się jak pod Node |
+| `tools/bun/expo-cli.preload.js` | repo | `bun expo run:*` / `export:embed`: bundlowanie (także prebundle „eager” Release) przez Buna |
 | `metro.config.js` | katalog aplikacji | pod Bunem `transformer.unstable_workerThreads = false` |
 | `tools/bin/node` (chmod +x) | repo | shim `node` → Bun |
 | `plugins/with-bun-xcode-env.js` | katalog aplikacji + `app.json` → `"plugins": ["./plugins/with-bun-xcode-env"]` | `ios/.xcode.env` → `NODE_BINARY=$(command -v bun)` (przeżywa `prebuild --clean`) |
 
 `bunfig.toml` (aplikacja):
 ```toml
-preload = ["./tools/bun/node-compat.preload.js", "./tools/bun/jest.preload.js"]
+preload = ["./tools/bun/node-compat.preload.js", "./tools/bun/jest.preload.js", "./tools/bun/expo-cli.preload.js"]
 # .env ładują Expo CLI i bundler dla trybu polecenia; Bun wziąłby .env.development także do release (KNOWN-ISSUES #12)
 env = false
 

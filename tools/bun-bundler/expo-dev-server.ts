@@ -18,6 +18,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 
 import { startDevServer } from './dev-server';
+import { usesReactServerComponents } from './expo-helpers';
 
 const MANIFEST_PATHS = ['/', '/manifest', '/index.exp'];
 const EXPO_PATH_PREFIXES = ['/_expo/loading', '/_expo/link', '/_expo/plugins', '/_expo/open', '/_expo/touch', '/_expo/error-overlay-meta', '/_expo/debugger'];
@@ -25,6 +26,8 @@ const NOT_HANDLED = 'x-bun-bundler-next';
 
 export function installBunBundlerDevServer(projectRoot: string) {
   const req = createRequire(path.join(projectRoot, 'package.json'));
+  // React Server Components keep Metro (see usesReactServerComponents)
+  if (usesReactServerComponents(req('@expo/config').getConfig(projectRoot, { skipSDKVersionRequirement: true }).exp)) return null;
   const cli = (m: string) => req(`@expo/cli/build/src/${m}`);
   const { BundlerDevServer } = cli('start/server/BundlerDevServer');
   const connect = req(req.resolve('connect', { paths: [req.resolve('@expo/cli/package.json')] }));
