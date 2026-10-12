@@ -1,7 +1,7 @@
-# "100% Bun" CI for an Expo / React Native app.
-# `node` on PATH is the Bun shim (tools/bin/node), so CocoaPods, Gradle and Xcode never run real Node.
-# Runner images still ship Node (and setup-bun itself runs on the Actions node24 runtime) - it is
-# just never reached by the toolchain. The `assert-no-node` step proves it.
+# CI for the bun-react-native package and its example app (example/), "100% Bun".
+# `node` on PATH is the Bun shim (tools/bin/node), so CocoaPods, Gradle and Xcode never run real Node. Runner images
+# still ship Node (and setup-bun itself runs on the Actions node24 runtime) - it is just never reached by the
+# toolchain; the `assert-no-node` step proves it. Real Node is installed only in bundle-determinism, as the reference.
 name: mobile-bun
 
 on:
@@ -34,28 +34,73 @@ jobs:
           path: ~/.bun/install/cache
           key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
       - run: bun install --frozen-lockfile
-      # No --bun anywhere: shebangs resolve `node` to the shim (= Bun). `bun --bun` would put Bun's buggy
+      - run: bun test # the package's own tests (tools/)
+      # Example app. No --bun anywhere: shebangs resolve `node` to the shim (= Bun); `bun --bun` would put Bun's buggy
       # `node` alias (oven-sh/bun#40482) in front of the shim for child processes.
-      - run: bun run typecheck
+      - run: bun run typecheck # bun check
+        working-directory: example
+      - run: bun run typecheck:tsc
+        working-directory: example
       - run: bun run lint
-      - run: bun run test --ci # Jest on the Bun runtime (tools/bun/jest.preload.js via bunfig.toml)
-      - run: bun run test:tools # bun test: Bun-only toolchain code (bundler resolver, Metro minifier)
-      - name: Bun bundler (replaces Metro) -> Hermes bytecode
+        working-directory: example
+      - run: bun run test --ci # Jest on the Bun runtime (tools/bun/jest.preload.js via the bunfig preload)
+        working-directory: example
+      - run: bunx bun-react-native doctor
+        working-directory: example
+      - name: Metro on Bun (default engine) -> Hermes bytecode
+        working-directory: example
         run: |
-          bun tools/bun-bundler/cli.ts export:embed --platform android --dev false --minify false \
-            --entry-file node_modules/expo-router/entry.js --bundle-output out/index.android.bundle \
+          bun expo export:embed --platform android --dev false --minify false \
+            --entry-file ../node_modules/expo-router/entry.js --bundle-output out/index.android.bundle \
             --assets-dest out/res --sourcemap-output out/index.android.bundle.map
-          node_modules/hermes-compiler/hermesc/linux64-bin/hermesc -emit-binary -O -out out/index.android.hbc out/index.android.bundle
-      - name: Bun bundler web export (Expo Router static rendering)
+          ../node_modules/hermes-compiler/hermesc/linux64-bin/hermesc -emit-binary -O -out out/index.android.hbc out/index.android.bundle
+      - name: expo export (iOS, Android: EAS Update layout, Hermes bytecode; web static) - Metro on Bun
+        working-directory: example
         run: |
-          bun run export:web
-          test -f dist/index.html && test -f dist/explore.html
-          grep -q '_expo/static/js/web/entry-' dist/index.html
-      - name: Bun bundler native export (EAS Update layout, Hermes bytecode)
+          bun expo export --output-dir dist
+          test -f dist/metadata.json && test -f dist/index.html && test -f dist/explore.html
+          ls dist/_expo/static/js/android/entry-*.hbc dist/_expo/static/js/ios/entry-*.hbc
+      - name: expo export with the Bun bundler (RN_BUNDLER=bun) = Metro's file set and files
+        working-directory: example
         run: |
-          bun run export --platform android --output-dir dist-ota
-          test -f dist-ota/metadata.json
-          ls dist-ota/_expo/static/js/android/entry-*.hbc
+          RN_BUNDLER=bun bun expo export --output-dir dist-bun
+          bunx bun-react-native compare dist dist-bun
+
+  # A project that installs the packed package and runs `init`, like a user would.
+  consumer:
+    runs-on: ubuntu-latest
+    needs: checks
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+      - name: Pack the package and create a project outside the workspace
+        run: |
+          bun pm pack --destination "$RUNNER_TEMP"
+          APP="$RUNNER_TEMP/app"
+          mkdir -p "$APP" && cp -R example/. "$APP" && rm -rf "$APP/node_modules" "$APP/bunfig.toml"
+          cd "$APP"
+          # the app as it was before bun-react-native: no plugin, no postinstall of this repo
+          bun -e 'const fs=require("fs");const a=JSON.parse(fs.readFileSync("app.json"));a.expo.plugins=a.expo.plugins.filter(p=>p!=="bun-react-native");fs.writeFileSync("app.json",JSON.stringify(a,null,2));const p=JSON.parse(fs.readFileSync("package.json"));delete p.scripts.postinstall;fs.writeFileSync("package.json",JSON.stringify(p,null,2))'
+          echo "APP=$APP" >> "$GITHUB_ENV"
+      - run: bun install
+        working-directory: ${{ env.APP }}
+      - run: bun add -d "$RUNNER_TEMP"/bun-react-native-*.tgz
+        working-directory: ${{ env.APP }}
+      - run: bunx bun-react-native init
+        working-directory: ${{ env.APP }}
+      - name: The usual commands
+        working-directory: ${{ env.APP }}
+        run: |
+          bun run typecheck
+          bun run test --ci
+          bun expo export --platform android --output-dir dist
+          ls dist/_expo/static/js/android/entry-*.hbc
 
   android:
     runs-on: ubuntu-latest
@@ -78,8 +123,9 @@ jobs:
           key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
       - run: bun install --frozen-lockfile
       - run: bun expo prebuild --platform android --no-install
+        working-directory: example
       - run: ./gradlew assembleRelease
-        working-directory: android
+        working-directory: example/android
 
   ios:
     runs-on: macos-latest
@@ -98,16 +144,17 @@ jobs:
           key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
       - run: bun install --frozen-lockfile
       - run: bun expo prebuild --platform ios --no-install
+        working-directory: example
       # expo-modules-autolinking writes ios/.xcode.env.local with NODE_BINARY=<bun> during pod install
       - run: pod install
-        working-directory: ios
+        working-directory: example/ios
       - run: >
           xcodebuild -workspace *.xcworkspace -scheme "$(basename *.xcworkspace .xcworkspace)"
           -configuration Release -sdk iphonesimulator -destination 'generic/platform=iOS Simulator'
           COMPILER_INDEX_STORE_ENABLE=NO build
-        working-directory: ios
+        working-directory: example/ios
 
-  # Guard against Bun-vs-Node output drift (oven-sh/bun#44947 and future regressions).
+  # Metro on Bun (the default engine) must stay byte-identical to Metro on Node (oven-sh/bun#44947 and regressions).
   bundle-determinism:
     runs-on: ubuntu-latest
     needs: checks
@@ -121,20 +168,21 @@ jobs:
           node-version: 22
       - run: bun install --frozen-lockfile
       - name: Bundle with Node and with Bun, compare bytes
+        working-directory: example
         run: |
+          NODE="$(command -v node)" # real Node, before anything puts the shim first
+          ENTRY="$(bun -p "require.resolve('expo-router/entry')")"
           for rt in node bun; do
             # Separate TMPDIR per runtime: Metro's disk cache lives in $TMPDIR/metro-cache and is reused even with
             # --reset-cache, which would let the Bun run serve modules transformed by the Node run.
             mkdir -p out-$rt/assets tmp-$rt && rm -rf .expo/cache
-            # Node run: real Node from setup-node. Bun run: the tools/bin node -> Bun shim first on PATH (never
-            # `bun --bun`, see AGENTS.md). RN_BUNDLER=metro: compare Metro on Node with Metro on Bun - without it the
-            # preload sends export:embed to the Bun bundler, whose output is not Metro's.
-            if [ $rt = node ]; then P="$PATH"; else P="$PWD/tools/bin:$PATH"; fi
-            # --minify false: what native Hermes release builds do (Gradle/Xcode); with minification the Bun run
-            # intentionally differs (tools/bun/metro-minifier.js replaces terser).
-            PATH="$P" RN_BUNDLER=metro TMPDIR=$PWD/tmp-$rt bun run expo export:embed --platform android --dev false --minify false \
-              --entry-file "$(node -p "require.resolve('expo-router/entry')")" \
+            if [ $rt = node ]; then RUN="$NODE ../node_modules/expo/bin/cli"; else RUN="bun expo"; fi
+            # --minify false: what native Hermes release builds do (Gradle/Xcode)
+            TMPDIR=$PWD/tmp-$rt $RUN export:embed --platform android --dev false --minify false --entry-file "$ENTRY" \
               --bundle-output out-$rt/index.android.bundle --assets-dest out-$rt/assets --reset-cache
+            # web (minified): Bun's minifier intentionally differs from terser - compare with terser on both
+            METRO_BUN_MINIFIER=0 TMPDIR=$PWD/tmp-$rt $RUN export --platform web --output-dir web-$rt
           done
           cmp out-node/index.android.bundle out-bun/index.android.bundle
           diff -r out-node/assets out-bun/assets
+          diff -r web-node web-bun

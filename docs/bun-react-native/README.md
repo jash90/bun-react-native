@@ -15,25 +15,26 @@ Expo SDK 57.0.27 · React Native 0.86.3 · Metro 0.84.5 · Hermes · Bun 1.4.3 �
 | [KNOWN-ISSUES.md](KNOWN-ISSUES.md) | Wszystkie znane bugi (Bun/Expo/RN/Jest) z linkami, statusem, obejściem, testem i warunkiem usunięcia obejścia |
 | [VERIFICATION.md](VERIFICATION.md) | Dowody: przebieg e2e bez Node, porównania bajt-w-bajt z Node, pomiary czasów, lista miejsc wołających `node` |
 | [PLAN-1TO1.md](PLAN-1TO1.md) | Plan pełnej zgodności 1:1 z Expo/Metro: fazy, kroki, szacunki, weryfikacja, decyzje |
-| [HISTORY.md](HISTORY.md) | Jak do tego doszliśmy: etapy, konkretne kroki, błędy z przyczynami i commity |
+| [HISTORY.md](HISTORY.md), [HISTORY-PACKAGE.md](HISTORY-PACKAGE.md) | Jak do tego doszliśmy: etapy, konkretne kroki, błędy z przyczynami i commity; etap 13 — paczka |
 | [CI-EAS.md](CI-EAS.md) | GitHub Actions i EAS Build: co działa, co niezweryfikowane |
-| Pliki w repo | [`bunfig.toml`](../../bunfig.toml), [`tools/bun/node-compat.preload.js`](../../tools/bun/node-compat.preload.js), [`tools/bun/jest.preload.js`](../../tools/bun/jest.preload.js), [`metro.config.js`](../../metro.config.js), [`tools/bin/node`](../../tools/bin/node), [`plugins/with-bun-xcode-env.js`](../../plugins/with-bun-xcode-env.js), [`.github/workflows/mobile-bun.yml`](../../.github/workflows/mobile-bun.yml), [`eas.json`](../../eas.json) |
+| Pliki paczki | [`preload.js`](../../preload.js), [`tools/bun/`](../../tools/bun/) (shimy, preloady, minifier, WorkerFarm), [`tools/bin/node`](../../tools/bin/node), [`app.plugin.js`](../../app.plugin.js), [`tools/cli/`](../../tools/cli/) (`init`/`doctor`), [`tools/bun-bundler/`](../../tools/bun-bundler/); aplikacja przykładowa: [`example/`](../../example/), CI: [`.github/workflows/mobile-bun.yml`](../../.github/workflows/mobile-bun.yml) |
 | [sources/bun/](sources/bun/INDEX.md) | Lokalna kopia oficjalnej dokumentacji Buna (oven-sh/bun@`c39c718`, 2026-10-12) + posty z bloga 1.3–1.4.3 |
 | [sources/](sources/) — Expo / React Native / Metro / EAS | Lokalna kopia oficjalnej dokumentacji (indeks: `sources/INDEX-expo-rn-metro.md`) |
 
 ## Skrót: co trzeba zrobić
 
-1. `bun install` przy starym lockfile'u (migracja zachowuje wersje), commit `bun.lock`, pin `@react-native/metro-config`.
-2. Pliki z tabeli wyżej są już w repo; lokalnie dodaj `tools/bin` na początek PATH (RUNBOOK § 4).
-3. Skrypty bez `--bun` (shebang → shim → Bun).
-4. CI: `.github/workflows/mobile-bun.yml` (z jobem porównującym bundle Node/Bun).
-5. Weryfikacja: pułapka na Node + `cmp` bundli + test na urządzeniach.
+1. `bun add -d github:jash90/bun-react-native` → `bunx bun-react-native init` → `bun install` (migracja starego
+   lockfile'a zachowuje wersje; `doctor` wskaże pin `@react-native/metro-config`, stare lockfile'e, zbędne linie).
+2. Komendy jak w Expo: `bun expo start|run:*|export`, `bun run test`, `bun check` — Metro na Bunie; `RN_BUNDLER=bun`
+   włącza bundler Buna. Bez `--bun`.
+3. CI: `.github/workflows/mobile-bun.yml` (z jobem porównującym bundle Node/Bun i jobem instalacji z tarballa).
+4. Weryfikacja: `doctor`, pułapka na Node, `cmp` bundli, test na urządzeniach.
 
 ## Czego NIE da się zrobić „na Bunie” i co zamiast
 
 | Zamiast | Używamy | Dlaczego |
 |---|---|---|
-| `Bun.build` bez dodatków | własny bundler na API Buna (`tools/bun-bundler/`, [BUNDLER.md](BUNDLER.md)) — buildy, dev server, eksport OTA i web; Metro tylko jako wyjście awaryjne | `Bun.build` nie zna formatu modułów Metro, HMR RN ani rejestru assetów — patrz KNOWN-ISSUES |
+| `Bun.build` bez dodatków | Metro na runtime Buna (domyślnie, 1:1 z Node) albo własny bundler na API Buna (`RN_BUNDLER=bun`, `tools/bun-bundler/`, [BUNDLER.md](BUNDLER.md)) — buildy, dev server, eksport OTA i web | `Bun.build` nie zna formatu modułów Metro, HMR RN ani rejestru assetów — patrz KNOWN-ISSUES |
 | `bun test` | Jest uruchomiony na runtime Bun | Flow + presety Jest RN (oven-sh/bun#16945) |
 | usunięcie Node z obrazów EAS / runnerów | Node obecny, ale nieużywany (shim przed nim na PATH) | obrazy dostarcza dostawca |
 

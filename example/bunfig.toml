@@ -1,0 +1,11 @@
+# Written by `bunx bun-react-native init`: every Bun process started in this app directory (Expo CLI, Metro, Jest,
+# the Gradle/Xcode bundling steps) loads the bun-react-native preload. Bun reads bunfig.toml only from the current
+# working directory, so it lives next to package.json (in a monorepo: in each app directory).
+preload = ["bun-react-native/preload"]
+
+# No automatic .env loading (like Node): Expo CLI loads .env.<mode> for the command's mode itself.
+env = false
+
+[install]
+# The isolated linker duplicates Expo native modules (oven-sh/bun#29343).
+linker = "hoisted"

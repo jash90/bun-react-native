@@ -3,6 +3,8 @@
 //       - Metro's asset resolution depends on that order
 //   #18 util.parseEnv: Node returns the keys sorted (a std::map, byte order), Bun in file order - @expo/env parses
 //       .env files with it, so the order of EXPO_PUBLIC_* variables in development bundles depends on it
+//   #19 net.Server#listen(port, host, undefined, cb): Bun never calls cb (oven-sh/bun#45090) - Metro's runServer
+//       (earlyPortCheck) calls it like that, so `react-native start` never finishes starting
 if (process.versions.bun) {
   const fs = require('fs');
   const byName = (a, b) => {
@@ -22,6 +24,17 @@ if (process.versions.bun) {
   };
   const origP = fs.promises.readdir;
   fs.promises.readdir = async function (...args) { return sortResult(await origP.apply(this, args)); };
+  const net = require('net');
+  const origListen = net.Server.prototype.listen;
+  net.Server.prototype.listen = function (...args) {
+    // drop undefined arguments before a trailing callback, as Node's argument normalisation does
+    if (typeof args[args.length - 1] === 'function') {
+      const cb = args.pop();
+      while (args.length && args[args.length - 1] === undefined) args.pop();
+      args.push(cb);
+    }
+    return origListen.apply(this, args);
+  };
   const util = require('util');
   const origParseEnv = util.parseEnv;
   if (typeof origParseEnv === 'function') {

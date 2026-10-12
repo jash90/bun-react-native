@@ -6,17 +6,18 @@ import path from 'node:path';
 
 import { differences, metroEngineDecision } from './metro-config-support';
 
-const repo = process.cwd();
+const repo = path.resolve(import.meta.dir, '../..');
+const app = path.join(repo, 'example');
 
-/** a project with the repo's package.json, app.json and node_modules, plus the given files */
+/** a project with the example app's package.json and app.json, the repo's node_modules, plus the given files */
 function project(files: Record<string, string>, appJson?: (app: any) => void): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bun-rn-metrocfg-'));
-  fs.copyFileSync(path.join(repo, 'package.json'), path.join(dir, 'package.json'));
-  const app = JSON.parse(fs.readFileSync(path.join(repo, 'app.json'), 'utf8'));
+  fs.copyFileSync(path.join(app, 'package.json'), path.join(dir, 'package.json'));
+  const appConfig = JSON.parse(fs.readFileSync(path.join(app, 'app.json'), 'utf8'));
   // local config plugins (./plugins/...) are not part of the temporary project
-  app.expo.plugins = (app.expo.plugins ?? []).filter((p: any) => !String(Array.isArray(p) ? p[0] : p).startsWith('./'));
-  appJson?.(app);
-  fs.writeFileSync(path.join(dir, 'app.json'), JSON.stringify(app));
+  appConfig.expo.plugins = (appConfig.expo.plugins ?? []).filter((p: any) => !String(Array.isArray(p) ? p[0] : p).startsWith('./'));
+  appJson?.(appConfig);
+  fs.writeFileSync(path.join(dir, 'app.json'), JSON.stringify(appConfig));
   fs.symlinkSync(path.join(repo, 'node_modules'), path.join(dir, 'node_modules'));
   for (const [name, content] of Object.entries(files)) fs.writeFileSync(path.join(dir, name), content);
   return dir;

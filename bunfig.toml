@@ -1,19 +1,16 @@
-# Bun configuration for the React Native toolchain. See docs/bun-react-native/RUNBOOK.md.
-# Bun reads this file only from the current working directory - keep it next to package.json.
+# Repo root: the package's own tests (`bun test` -> tools/) and the workspace install (example/ is a member).
+# The example app has its own bunfig.toml, the one `bunx bun-react-native init` writes into a project.
 
-# Node-compat shims loaded into every Bun process started here (CLI, Metro, Jest and forked workers;
-# NOT worker_threads - see metro.config.js).
-preload = ["./tools/bun/node-compat.preload.js", "./tools/bun/jest.preload.js", "./tools/bun/expo-cli.preload.js"]
+# The package preload (Node-compat shims, Jest under Bun, Expo CLI hooks, node shim first on PATH) - also for
+# `bun test` of tools/, whose tests start Expo CLI / Metro code.
+preload = ["./preload.js"]
 
-# No automatic .env loading (like Node): the bundler and Expo CLI load .env.<mode> for the command's mode
-# themselves (tools/bun-bundler/env.ts); Bun would pick .env.development for release bundles.
+# No automatic .env loading (like Node): the bundler and Expo CLI load .env.<mode> themselves (tools/bun-bundler/env.ts).
 env = false
 
-# Do not set `[run] bun = true`: like `--bun`, it puts Bun's `node` alias (oven-sh/bun#40482) in front of
-# tools/bin/node for child processes.
+# Do not set `[run] bun = true`: like `--bun`, it puts Bun's `node` alias (oven-sh/bun#40482) in front of the shim.
 
 [test]
-# `bun test` covers the Bun-only toolchain code in tools/; app tests (React Native) run on Jest.
 root = "./tools"
 
 [install]

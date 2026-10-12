@@ -1,0 +1,49 @@
+# Historia: paczka `bun-react-native` (ciąg dalszy [HISTORY.md](HISTORY.md))
+
+## Etap 13 — paczka `bun-react-native` (2026-10-12)
+
+**Analiza** (prototypy w `/tmp/bunpoc`, pomiary przy obciążonym Macu — pojedyncze próby):
+1. Preload z paczki działa (`preload = ["<paczka>/preload"]`); `bin` `node` z paczki ląduje w `node_modules/.bin`, ale
+   bez Node na PATH `bun run` wstawia przed nim alias `node` Buna (oven-sh/bun#40482: `node --eval … first second` →
+   `["second"]`); preload wstawiający katalog shima na początek `process.env.PATH` naprawia to dla dzieci.
+2. Preload może przejąć zwykłe `expo start` / `expo export` (to, co robił `cli.ts`): wynik bajt w bajt jak `cli.ts`.
+3. Pomiary silników (przykładowa aplikacja): `export:embed` Android zimny/ciepły Node+Metro 8,4/1,7 s, Bun+Metro
+   7,9/1,5 s, bundler Buna 7,8/1,6 s; `expo export` iOS+Android zimny 18,7 / 19,4 / 25,4 s; pierwszy bundle dev iOS
+   zimny 7,5 / 5,7 / 6,3 s, ciepły 0,63 / 0,44 / 1,01 s. Bundler Buna nie jest szybszy, a wpina się w ~30 modułów
+   Expo CLI, 16 ścieżek `metro/private` i 8 modułów `@expo/metro-config` (Metro na Bunie: 2 punkty — `WorkerFarm` i
+   `withMetroMultiPlatformAsync`).
+4. SDK 54–58 (statycznie, `sdkcompat.py`): Expo CLI 58 ma wszystkie punkty zaczepienia; `@expo/metro-config` 58 nie
+   ma `serializer/packedMap` (tryb dev bundlera Buna); 56: brak `favicon.generateFaviconAssetAsync`; 54–55: dodatkowo
+   `resolveLoader` (54) i `packedMap`.
+5. Gołe RN 0.86 (`@react-native-community/cli`): z preloadem bajt w bajt jak Node (bundle, dev, HMR, codegen); bez
+   niego inna kolejność assetów i codegenu oraz zawieszony `react-native start` — nowy błąd Buna (KNOWN-ISSUES #19,
+   zgłoszony jako oven-sh/bun#45090; do #44947 dopisany komentarz o skutkach w RN).
+6. Rozbieżność trybu dev bundlera Buna: React Compiler brany z `app.json`, Metro bierze `transform.reactCompiler` z URL
+   (klienci wysyłają go z manifestu, więc w praktyce wynik ten sam; ręczny URL bez parametru → +2 moduły).
+
+**Decyzje użytkownika:** domyślnie Metro na Bunie, bundler Buna jako opcja; v1 = Expo 57 + 58, gołe RN w v1.1;
+npm po v1 (do tego czasu `github:jash90/bun-react-native`); zgłoszenie błędów Bunowi.
+
+**Implementacja:**
+1. Układ repo: paczka w katalogu głównym (`preload.js`, `app.plugin.js`, `tools/`, `files` w `package.json`, tarball
+   ~110 KB), aplikacja w `example/` (członek workspace'u; jej postinstall linkuje `node_modules/bun-react-native` → repo).
+   Wersje zależności po przeniesieniu identyczne (`bun pm ls --all`, 1017 pakietów).
+2. `RN_BUNDLER=bun` wybiera bundler Buna (wcześniej `RN_BUNDLER=metro` wybierał Metro); `usesMetroEngine` /
+   `bunBundlerRequested` w `metro-config-support.ts`.
+3. Preload: `path.preload.js` (shim na PATH), `expo-cli.preload.js` przejmuje `start`/`run:*`/`export`/`export:embed`
+   przy `RN_BUNDLER=bun` i pomija `--reset-cache` dla `export:embed` na Metro; minifier Buna i `unstable_workerThreads`
+   ustawia `metro-on-bun.ts` (puste `metro.config.js`); shim `net.Server#listen` w `node-compat.preload.js`.
+4. Config plugin tylko dla Xcode (`NODE_BINARY`, z zapasową ścieżką Buna dla Xcode z Docka); przekierowanie `CLI_PATH` /
+   `cliFile` usunięte — kroki bundlowania Xcode/Gradle startują z katalogu aplikacji, więc wybiera preload.
+5. CLI `bun-react-native`: `init` (bunfig, plugin, `eas.json`, hook `eas-build-post-install`, podpowiedzi), `doctor`
+   (Bun, SDK, preload, plugin, `node` w dzieciach z testem aliasu #40482, pin `@react-native/metro-config`, lockfile'e,
+   zbędne linie `metro.config.js`, silnik), `compare`.
+6. `typecheck` = `bun check` (type checker Buna 1.4.3: te same błędy co `tsc --noEmit`, 0,16 s zamiast 2,7 s).
+7. Weryfikacja lokalna (bez Node na PATH): `bun test` 48/48, Jest 8/8, `bun check`, `tsc`, ESLint; `export:embed`
+   Android Metro na Bunie = Node bajt w bajt + `hermesc`; `expo export` iOS/Android = Node (poza ścieżką `.hbc`, #16),
+   web różni się tylko minifikatorem Buna, z terserem (`METRO_BUN_MINIFIER=0`) 4/4 przebiegi = Node; dev (URL z
+   manifestu) identyczny dla Node+Metro, Bun+Metro i bundlera Buna; `RN_BUNDLER=bun expo export` vs Metro: 0 różnic.
+   Projekt spoza repo z paczką z tarballa + `init`: Jest, typecheck, lint, export (= Node), `RN_BUNDLER=bun` export
+   (0 różnic), `prebuild` iOS z `NODE_BINARY` = Bun. Jeden pojedynczy eksport web na Bunie (terser, czysty cache) wyszedł
+   inny (1212 zamiast 1213 modułów) i nie dał się powtórzyć w 5 kolejnych przebiegach — obserwacja otwarta, CI porównuje
+   web Node vs Bun przy każdej zmianie.

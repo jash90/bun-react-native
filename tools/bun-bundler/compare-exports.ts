@@ -1,5 +1,5 @@
-// Compare an `expo export` (Metro) output directory with a `bun run export` (Bun bundler) one:
-//   bun tools/bun-bundler/compare-exports.ts <metro-dir> <bun-dir>
+// Compare an `expo export` (Metro) output directory with a Bun bundler one:
+//   bunx bun-react-native compare <metro-dir> <bun-dir>   (RN_BUNDLER=bun expo export vs expo export)
 // Both must have the same file set and identical files. The JS bundles themselves differ by design (another
 // bundler), so `entry-<hash>` names are normalized and bundle files are only checked for existence; HTML,
 // metadata.json and server manifests are compared with those names normalized. Exit code 1 on any difference.
@@ -9,7 +9,7 @@ import path from 'node:path';
 
 const [metroDir, bunDir] = process.argv.slice(2);
 if (!metroDir || !bunDir) {
-  console.error('usage: bun tools/bun-bundler/compare-exports.ts <metro-dir> <bun-dir>');
+  console.error('usage: bun-react-native compare <metro-dir> <bun-dir>');
   process.exit(2);
 }
 
