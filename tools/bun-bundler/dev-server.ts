@@ -15,11 +15,13 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import type { Server, ServerWebSocket } from 'bun';
 
-import { getAssetRecord } from './assets';
 import { DevGraph, type HmrUpdate } from './dev-graph';
 import { domComponentHtml, domRoot } from './dom';
 import { loadProjectEnv, projectEnvFiles, reloadProjectEnv } from './env';
 import { createMessageSocket, messageSocketData, type MessageSocketData } from './message-socket';
+import { loadExpoMetroConfig } from './metro-config';
+import { createMetroEndpoints } from './metro-endpoints';
+import { symbolicateRequest } from './symbolicate';
 import { devClientMap } from './sourcemap';
 import { createWebDevHandler } from './web-dev';
 
@@ -53,7 +55,7 @@ type Platform = 'ios' | 'android' | 'web' | 'tvos' | 'macos';
 
 const PLATFORM_LABEL: Record<Platform, string> = { ios: 'iOS', android: 'Android', web: 'Web', tvos: 'tvOS', macos: 'macOS' };
 const platformOf = (url: string): Platform => (url.match(/[?&]platform=(android|web|tvos|macos)(&|$)/)?.[1] as Platform) ?? 'ios';
-type WsData = { kind: 'hot' | 'message' | 'inspector' | 'devtools-plugins'; platform?: Platform; key?: string; message?: MessageSocketData; [k: string]: any };
+type WsData = { kind: 'hot' | 'message' | 'inspector' | 'devtools-plugins' | 'events'; platform?: Platform; key?: string; message?: MessageSocketData; [k: string]: any };
 
 const IGNORED_DIRS = /(^|[\\/])(node_modules|\.git|ios|android|\.expo|dist|coverage)([\\/]|$)/;
 
@@ -61,9 +63,12 @@ export async function startDevServer(opts: DevServerOptions) {
   const { projectRoot, port } = opts;
   // like `expo start`: development mode, .env files loaded before any bundle (and its transform workers) exists
   if (opts.loadEnv !== false) loadProjectEnv(projectRoot, 'development');
+  // the project's Metro config as Expo CLI composes it (symbolicator, and the bundler options read from it)
+  const metroConfig = await loadExpoMetroConfig(projectRoot, { isExporting: false });
+  const metroEndpoints = createMetroEndpoints(projectRoot, metroConfig.config);
   const envFiles = projectEnvFiles(projectRoot);
   const req = createRequire(path.join(projectRoot, 'package.json'));
-  const { TraceMap, FlattenMap, originalPositionFor, encodedMap } = req('@jridgewell/trace-mapping');
+  const { FlattenMap, encodedMap } = req('@jridgewell/trace-mapping');
   const pkg = JSON.parse(fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf8'));
   const entryFile = path.relative(projectRoot, req.resolve(pkg.main ?? './index.js', { paths: [projectRoot] }));
 
@@ -176,7 +181,7 @@ export async function startDevServer(opts: DevServerOptions) {
     return sent;
   }
 
-  const web = createWebDevHandler({ projectRoot, port });
+  const web = createWebDevHandler({ projectRoot, port, broadcast: (method, params) => messages.broadcast(method, params) });
 
   async function onFilesChanged(files: string[]) {
     // Expo watchEnvironmentVariables: a changed .env file reloads the variables (dev bundles read them on serialization)
@@ -261,8 +266,10 @@ export async function startDevServer(opts: DevServerOptions) {
     const { pathname, searchParams } = url;
     const platform = (searchParams.get('platform') ?? 'ios') as Platform;
 
-    if (pathname === '/hot' || pathname === '/message' || pathname === '/expo-dev-plugins/broadcast') {
-      const kind = pathname === '/expo-dev-plugins/broadcast' ? 'devtools-plugins' : (pathname.slice(1) as 'hot' | 'message');
+    // `/events`: accepted and silent, like Expo CLI's (its events socket never registers connections,
+    // createEventSocket.js)
+    if (pathname === '/hot' || pathname === '/message' || pathname === '/events' || pathname === '/expo-dev-plugins/broadcast') {
+      const kind = pathname === '/expo-dev-plugins/broadcast' ? 'devtools-plugins' : (pathname.slice(1) as 'hot' | 'message' | 'events');
       const message = kind === 'message' ? messageSocketData(request, srv.requestIP(request)?.address, `http://localhost:${port}`) : undefined;
       if (srv.upgrade(request, { data: { kind, message } })) return undefined;
       return new Response('WebSocket upgrade failed', { status: 400 });
@@ -274,7 +281,8 @@ export async function startDevServer(opts: DevServerOptions) {
     const inspectorResponse = await inspector.fetch(request, srv);
     if (inspectorResponse !== null) return inspectorResponse;
 
-    if (pathname === '/status') return new Response('packager-status:running');
+    // Expo createMetroStatusMiddleware
+    if (pathname === '/status') return new Response('packager-status:running', { headers: { 'X-React-Native-Project-Root': encodeURI(metroConfig.config.projectRoot) } });
     if (pathname.endsWith('.bundle')) {
       try {
         const code = searchParams.get('modulesOnly') === 'true' ? await serializeLazy(url) : await serialize(url);
@@ -294,17 +302,22 @@ export async function startDevServer(opts: DevServerOptions) {
       if (!mapCache.has(keyOf(url))) await serialize(bundleUrl);
       return Response.json(flatMap(keyOf(url))!.flat);
     }
-    if (pathname.startsWith('/assets/')) return serveAsset(projectRoot, pathname, searchParams.get('platform') ?? 'web');
+    if (metroEndpoints.isAssetRequest(pathname)) return metroEndpoints.asset(request);
+    const source = metroEndpoints.source(pathname);
+    if (source) return source;
     if (pathname === '/symbolicate' && request.method === 'POST') {
-      const body = await request.json();
-      const traceFor = (file: string) => {
-        if (/[?&]modulesOnly=true/.test(file)) return flatLazyMap(lazyKey(new URL(file)))?.trace ?? null;
-        const key = keyOf(file);
-        return mapCache.has(key) ? flatMap(key)!.trace : null;
+      let body: unknown = null;
+      try {
+        body = await request.json();
+      } catch {}
+      const mapsFor = (file: string) => {
+        const entry = /[?&]modulesOnly=true/.test(file) ? flatLazyMap(lazyKey(new URL(file))) : mapCache.has(keyOf(file)) ? flatMap(keyOf(file)) : null;
+        return entry ? { trace: entry.trace, served: entry.flat } : null;
       };
-      return Response.json(symbolicate(projectRoot, body.stack ?? [], traceFor, originalPositionFor));
+      const isGraphFile = (file: string) => [...graphs.values()].some((g) => g.hasModule(file));
+      const result = await symbolicateRequest(body, { projectRoot, mapsFor, isGraphFile, symbolicator: metroConfig.config.symbolicator ?? {} });
+      return Response.json(result.body, { status: result.status });
     }
-    if (pathname === '/open-stack-frame' || pathname === '/open-url') return new Response('');
     if (pathname.startsWith('/_expo/@dom')) {
       // Expo DomComponentsMiddleware: the HTML the native WebView loads for a `"use dom"` component
       const file = searchParams.get('file');
@@ -329,9 +342,13 @@ export async function startDevServer(opts: DevServerOptions) {
       // Expo's CORS middleware first: cross-origin requests from foreign sites are rejected like in Metro
       const cors = opts.cors?.(request);
       if (cors?.error) return new Response(cors.error, { status: 500 });
-      const response = await route(request, srv);
-      if (response && cors) for (const [k, v] of Object.entries(cors.headers)) if (!response.headers.has(k)) response.headers.set(k, v);
-      return response as Response;
+      let response = await route(request, srv);
+      if (!response) return undefined as any; // websocket upgrade
+      if (cors) for (const [k, v] of Object.entries(cors.headers)) if (!response.headers.has(k)) response.headers.set(k, v);
+      // Expo's Metro middleware stack: no-cache headers on every response, compression of bundles and maps
+      for (const [k, v] of NO_CACHE_HEADERS) if (!response.headers.has(k)) response.headers.set(k, v);
+      if (/\.(bundle|map)$/.test(new URL(request.url).pathname)) response = await compress(request, response, req);
+      return response;
     },
     websocket: {
       open(ws) {
@@ -376,33 +393,37 @@ export async function startDevServer(opts: DevServerOptions) {
   return { server, port: server.port as number, broadcast: messages.broadcast };
 }
 
-// ---------------------------------------------------------------- assets
+// ---------------------------------------------------------------- Expo/Metro response headers
 
-/** metro/src/Assets.js getAsset: the first file of the asset record with at least the requested scale. */
-function serveAsset(projectRoot: string, pathname: string, platform: string): Response {
-  const rel = decodeURIComponent(pathname.slice('/assets/'.length));
-  const abs = path.resolve(projectRoot, rel);
-  if (!abs.startsWith(projectRoot + path.sep)) return new Response('Forbidden', { status: 403 });
-  const scale = Number(path.basename(abs).match(/@([\d.]+)x(\.[^.]+)?\.[^.]+$/)?.[1] ?? 1);
-  try {
-    const { scales, files } = getAssetRecord(abs, platform);
-    const i = scales.findIndex((s) => s >= scale);
-    return new Response(Bun.file(files[i === -1 ? files.length - 1 : i]));
-  } catch {
-    return new Response('Asset not found', { status: 404 });
-  }
+/** Expo createMetroMiddleware noCacheMiddleware */
+const NO_CACHE_HEADERS: [string, string][] = [
+  ['Surrogate-Control', 'no-store'],
+  ['Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate'],
+  ['Pragma', 'no-cache'],
+  ['Expires', '0'],
+];
+
+/**
+ * Expo's compression middleware for `.bundle` / `.map` (npm `compression` defaults: br > gzip > deflate by
+ * Accept-Encoding via `negotiator`, threshold 1 KiB).
+ */
+async function compress(request: Request, response: Response, req: NodeRequire): Promise<Response> {
+  if (response.headers.has('Content-Encoding') || !response.body) return response;
+  const body = Buffer.from(await response.arrayBuffer());
+  const headers = new Headers(response.headers);
+  headers.append('Vary', 'Accept-Encoding');
+  const Negotiator = req(req.resolve('negotiator', { paths: [req.resolve('compression', { paths: [req.resolve('@expo/cli/package.json')] })] }));
+  const accept = request.headers.get('accept-encoding');
+  const method = accept ? new Negotiator({ headers: { 'accept-encoding': accept } }).encoding(['br', 'gzip', 'deflate', 'identity'], ['br', 'gzip']) : 'identity';
+  if (body.length < 1024 || !method || method === 'identity') return new Response(body, { status: response.status, headers });
+  const zlib = await import('node:zlib');
+  const out = method === 'br' ? zlib.brotliCompressSync(body) : method === 'gzip' ? zlib.gzipSync(body) : zlib.deflateSync(body);
+  headers.set('Content-Encoding', method);
+  headers.delete('Content-Length');
+  return new Response(out, { status: response.status, headers });
 }
+
+// ---------------------------------------------------------------- assets
 
 // ---------------------------------------------------------------- symbolication
 
-function symbolicate(projectRoot: string, stack: any[], traceFor: (file: string) => any, originalPositionFor: any) {
-  const mapped = stack.map((frame: any) => {
-    if (!frame?.file || !/\.bundle(\?|$)/.test(frame.file) || frame.lineNumber == null) return frame;
-    const trace = traceFor(frame.file);
-    if (!trace) return frame;
-    const pos = originalPositionFor(trace, { line: frame.lineNumber, column: Math.max(0, (frame.column ?? 1) - 1) });
-    if (pos.source == null) return frame;
-    return { ...frame, file: path.resolve(projectRoot, pos.source), lineNumber: pos.line, column: (pos.column ?? 0) + 1, methodName: pos.name ?? frame.methodName };
-  });
-  return { stack: mapped, codeFrame: null };
-}

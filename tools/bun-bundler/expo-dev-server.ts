@@ -19,9 +19,10 @@ import { createRequire } from 'node:module';
 
 import { startDevServer } from './dev-server';
 import { usesReactServerComponents } from './expo-helpers';
+import { loadExpoMetroConfig } from './metro-config';
 
 const MANIFEST_PATHS = ['/', '/manifest', '/index.exp'];
-const EXPO_PATH_PREFIXES = ['/_expo/loading', '/_expo/link', '/_expo/plugins', '/_expo/open', '/_expo/touch', '/_expo/error-overlay-meta', '/_expo/debugger'];
+const EXPO_PATH_PREFIXES = ['/open-stack-frame', '/_expo/loading', '/_expo/link', '/_expo/plugins', '/_expo/open', '/_expo/touch', '/_expo/error-overlay-meta', '/_expo/debugger'];
 const NOT_HANDLED = 'x-bun-bundler-next';
 
 export function installBunBundlerDevServer(projectRoot: string) {
@@ -53,7 +54,8 @@ export function installBunBundlerDevServer(projectRoot: string) {
       const serverBaseUrl = `http://localhost:${options.port}`;
       process.env.EXPO_DEV_SERVER_ORIGIN = serverBaseUrl;
 
-      const app = this.createExpoMiddleware(options, exp, serverBaseUrl);
+      const { config: metroConfig } = await loadExpoMetroConfig(projectRoot, { isExporting: false, maxWorkers: options.maxWorkers });
+      const app = this.createExpoMiddleware(options, exp, serverBaseUrl, metroConfig);
       const internal = http.createServer(app);
       await new Promise<void>((resolve) => internal.listen(0, '127.0.0.1', resolve));
       const internalPort = (internal.address() as any).port;
@@ -94,8 +96,11 @@ export function installBunBundlerDevServer(projectRoot: string) {
     }
 
     /** the middleware MetroBundlerDevServer adds (in its order), minus what the Bun dev server serves itself */
-    createExpoMiddleware(options: any, exp: any, serverBaseUrl: string) {
+    createExpoMiddleware(options: any, exp: any, serverBaseUrl: string, metroConfig: any) {
       const app = connect();
+      // Expo's base Metro middleware: `/open-stack-frame` (open a LogBox frame in the editor, file inside the server
+      // root, throttled); its `/status` is served by the Bun dev server
+      app.use(cli('start/server/metro/dev-server/createMetroMiddleware').createMetroMiddleware(metroConfig, { serverBaseUrl, getMetroBundler: () => ({ ready: async () => {} }) }).middleware);
       const routerRoot = cli('start/server/metro/router').getRouterDirectoryModuleIdWithManifest(projectRoot, exp);
       const mw = (name: string) => cli(`start/server/middleware/${name}`);
       let manifest: any;

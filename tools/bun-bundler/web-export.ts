@@ -140,7 +140,7 @@ export async function buildServerFunction(project: Project, file: string, opts: 
   const build = await buildWeb(project, [file], { kind: 'function', minify: opts.minify, sourcemap: true });
   // the module file is strict like Metro's ES modules (the directive must open the file)
   const map = build.map ? relativeSources({ ...build.map, mappings: ';;' + build.map.mappings }, project) : null;
-  return { src: `"use strict";\n${project.prelude()}\n${build.code}`, map };
+  return { src: `"use strict";\n${project.prelude()}\n${build.code}`, map, modules: build.modules };
 }
 
 /** Same layout as Expo CLI's exportServerRouteAsync: `name.js` + `name.js.map` in the server domain. */

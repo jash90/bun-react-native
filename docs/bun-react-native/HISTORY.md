@@ -264,6 +264,32 @@ dotykają bundlera.
    Sprawdzone na fiksturze z `react-server-dom-webpack` 19.2.8 i funkcją `'use server'`: eksport przez nasze CLI
    tworzy `/_flight/[...rsc]`. Przeniesienie RSC na bundler Buna to osobny, wielodniowy projekt.
 
+## Etap 12 — realizacja PLAN-1TO1.md
+
+Plan: `PLAN-1TO1.md` (analiza kodu Expo/Metro i źródeł z sieci). Przyjęte domyślne decyzje: format bundli Metro jako
+domyślny (`Bun.build` jako opcja), weryfikacja bajtów na terserze, instalacje tylko w fiksturach w `/tmp`, RSC jako
+faza 5.
+
+### Faza 0 — serwer dev jak Metro + krok 1.1 (ładowanie configu)
+
+1. **Config Metro jak w Expo** (`metro-config.ts`): wywołanie `loadMetroConfigAsync` Expo CLI (`metro.config.js` +
+   domyślne Expo + `withMetroMultiPlatformAsync`) z atrapą bundlera Metro, do której Expo rejestruje moduły wirtualne.
+   Sprawdzone pod Bunem: `sourceExts`, `assetExts`, platformy, `resolveRequest`, `customizeFrame`, `publicPath`
+   (`/assets/?unstable_path=.` w dev — u nas było `/assets`; poprawi to faza 3.1).
+2. **`/symbolicate`** (`symbolicate.ts`): kolumny liczone od 0 (był błąd o 1), nazwy funkcji z map funkcji,
+   `symbolicator.customizeFrame/customizeStack` z configu, `codeFrame` z pierwszej nie-zwiniętej ramki z pliku w grafie,
+   błędy 400/500. Porównanie z Metro uruchomionym obok (8091) dla ramki w `explore.tsx` i w `ExceptionsManager.js`:
+   identyczne ramki, zwinięcie, nazwy funkcji, `codeFrame` i komunikat błędu.
+3. **`loader-invalidate`**: bundle loaderów zapamiętują swój graf; zmiana pliku z grafu → `sendDevCommand
+   {name:'loader-invalidate', data:{scope:'all'}}` jak `setupLoaderGraphListener` Expo. Fikstura z loaderem: komunikat
+   po każdej zmianie pliku.
+4. **Endpointy Metro** (`metro-endpoints.ts`, `createMetroMiddleware` Expo): assety przez `getAsset` Metro (ścieżka i
+   `?unstable_path=`, skala, `Range`, typ MIME, 404 bez `Content-Type`), `/[metro-project]/` i `/[metro-watchFolders]/`
+   (łącznie z `Content-Type: false` Metro dla nieznanych typów), `/open-stack-frame` Expo (root serwera, limit), `/open-url`
+   → 404, `/events` (przyjęty i cichy jak w Expo), nagłówki no-cache na każdej odpowiedzi, kompresja `.bundle`/`.map`
+   (br/gzip/deflate jak pakiet `compression`), `X-React-Native-Project-Root` na `/status`. Porównanie z Metro:
+   identyczne kody, typy, rozmiary i md5 odpowiedzi.
+
 ---
 
 ## Jak powtórzyć weryfikację

@@ -14,6 +14,8 @@ import { buildServerFunction } from './web-export';
 export function createLoaderRunner(opts: { projectRoot: string; exp: any; routerRoot: string; dev: boolean; minify: boolean }) {
   const { projectRoot } = opts;
   const modules = new Map<string, Promise<any>>();
+  /** files of each loader bundle's graph (Expo listens to the loader graph to broadcast `loader-invalidate`) */
+  const graphFiles = new Map<string, Set<string>>();
   const dir = path.join(projectRoot, 'node_modules', '.cache', 'bun-rn-bundler', 'web-loaders');
 
   /** the loader bundle of a route file (CommonJS for Node, like Metro's `isLoaderBundle` bundles) */
@@ -26,7 +28,8 @@ export function createLoaderRunner(opts: { projectRoot: string; exp: any; router
     let p = modules.get(file);
     if (!p) {
       p = (async () => {
-        const { src } = await bundle(file);
+        const { src, modules: files } = await bundle(file);
+        graphFiles.set(file, new Set(files));
         fs.mkdirSync(dir, { recursive: true });
         const out = path.join(dir, `${path.basename(file).replace(/\W+/g, '_')}-${md5(src)}.cjs`);
         if (!fs.existsSync(out)) fs.writeFileSync(out, src);
@@ -54,6 +57,10 @@ export function createLoaderRunner(opts: { projectRoot: string; exp: any; router
       } catch (e: any) {
         throw new Error(`Failed to execute loader for route "${path.relative(projectRoot, file)}": ${e?.message ?? e}`);
       }
+    },
+    /** whether a changed file belongs to a loaded loader's graph (Expo: setupLoaderGraphListener) */
+    affectedBy(changed: string[]) {
+      return [...graphFiles.values()].some((files) => changed.some((f) => files.has(f)));
     },
     invalidate() {
       modules.clear();

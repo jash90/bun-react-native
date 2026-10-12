@@ -301,6 +301,11 @@ export class DevGraph {
     return { code: parts.join(''), map: { version: 3, sections } };
   }
 
+  /** whether the file is a module of this graph (Metro: depGraph.doesFileExist, used for code frames) */
+  hasModule(file: string): boolean {
+    return this.modules.has(file);
+  }
+
   /** function map of a module file (absolute path) */
   functionMapOf(file: string): FunctionMap | null {
     return this.modules.get(file)?.functionMap ?? null;

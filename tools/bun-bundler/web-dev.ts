@@ -20,7 +20,7 @@ import { buildWeb, md5, type WebBuildResult } from './web';
 import { createLoaderRunner, type LoaderRunner } from './loaders';
 import { buildServerFunction, cssArtifacts, importServerBundle } from './web-export';
 
-export function createWebDevHandler(opts: { projectRoot: string; port: number }) {
+export function createWebDevHandler(opts: { projectRoot: string; port: number; broadcast?: (method: string, params?: object) => void }) {
   const { projectRoot } = opts;
   const h = expoHelpers(projectRoot);
   let exp = getExpoConfig(projectRoot);
@@ -210,6 +210,8 @@ export function createWebDevHandler(opts: { projectRoot: string; port: number })
     invalidate(changed: string[]) {
       rendering = null;
       functions.clear();
+      // Expo: a change in a loader's graph tells the apps to refetch loader data (useLoaderData)
+      if (loaders?.affectedBy(changed)) opts.broadcast?.('sendDevCommand', { name: 'loader-invalidate', data: { scope: 'all' } });
       loaders?.invalidate();
       if (changed.some((f) => /(^|[\\/])(app\.json|app\.config\.[cm]?[jt]s|package\.json)$/.test(f))) {
         exp = getExpoConfig(projectRoot);
