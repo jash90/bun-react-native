@@ -30,7 +30,15 @@ if (process.env.RN_BUNDLER !== 'metro') {
   }
 }
 
+// Metro: Xcode and Gradle always pass --reset-cache, which makes every release build transform from scratch (~8 s).
+// Metro's cache keys cover file contents, transformer/Babel config and (metro.config.js) EXPO_PUBLIC_* values, so
+// export:embed keeps the cache like the Bun bundler does; RN_BUNDLER_RESET_CACHE=1 honours the flag.
+const args =
+  process.env.RN_BUNDLER === 'metro' && (command === 'export:embed' || command === 'bundle') && process.env.RN_BUNDLER_RESET_CACHE !== '1'
+    ? rest.filter((a) => a !== '--reset-cache')
+    : rest;
+
 // Expo CLI's bin, as if run as `expo <command> ...`
 const expoBin = req.resolve('@expo/cli'); // build/bin/cli
-process.argv = [process.argv[0], expoBin, command === 'bundle' ? 'export:embed' : command, ...rest];
+process.argv = [process.argv[0], expoBin, command === 'bundle' ? 'export:embed' : command, ...args];
 req(expoBin);

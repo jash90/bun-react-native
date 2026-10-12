@@ -53,6 +53,12 @@ bun run ios | bun run android # build Debug bez uruchamiania Metro (--no-bundler
 RN_BUNDLER=metro …             # ta sama komenda przez Metro (@expo/cli)
 ```
 
+Z `RN_BUNDLER=metro` build natywny (`cli.ts export:embed`) pomija `--reset-cache` z Xcode/Gradle, tak jak Expo robi to
+w CI (`exportEmbedAsync.js:202-207`), więc ciepły bundle release trwa ~1,9 s zamiast ~8 s. Klucze cache Metro obejmują
+treść plików, config transformera i Babel, a `metro.config.js` dopisuje do `cacheVersion` hash zmiennych
+`EXPO_PUBLIC_*` i `BABEL_ENV` (w produkcji wstawianych przy transformacji; Expo ich w kluczu nie ma). Wynik ciepły jest
+bajt w bajt równy zimnemu, a zmiana zmiennej unieważnia cache. `RN_BUNDLER_RESET_CACHE=1` przywraca reset.
+
 - **EAS Update** (wymaga skonfigurowanego `expo-updates`, `bunx eas-cli update:configure`): `bun run export --platform ios
   --platform android`, potem `bunx eas-cli update --skip-bundler --channel <kanał> --message "<opis>"` — `eas update`
   publikuje gotowy `dist/` (`--input-dir`, domyślnie `dist`) zamiast uruchamiać Metro.

@@ -78,6 +78,10 @@ transformacji dla buildów natywnych (wymaga kluczy uwzględniających `babel.co
 buildy wołają `--reset-cache`). Bundler Buna zostaje jako tryb „szybszy/mniejszy” z opisanymi różnicami. Wybór
 domyślnego silnika należy do właściciela projektu (§ 5, pkt 0).
 
+Postęp tej drogi: `WorkerFarm` na wątkach Buna (`ff9e15a`); cache transformacji Metro przeżywający `--reset-cache`
+buildów natywnych z `EXPO_PUBLIC_*` w kluczu (ciepły `export:embed` 1,85 s, bajty jak na zimno; BUNDLER.md). Dalej:
+macierz weryfikacji (faza 6) na silniku Metro — pluginy `metro.config.js`, `expo-updates`, RSC, Atlas w fiksturach.
+
 ## 3. Fazy
 
 ### Faza 0 — poprawki serwera dev (1,5–2 dni)

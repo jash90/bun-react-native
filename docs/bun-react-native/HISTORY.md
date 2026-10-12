@@ -307,8 +307,17 @@ faza 5.
    `hermesc` na tym samym pliku 4× ten sam md5; KNOWN-ISSUES #16); dev (`expo start` na 8091/8092) — bundle różni się
    tylko portem w `sourceMappingURL`, mapa identyczna, odpowiedź błędu składni identyczna poza ramkami stosu workera;
    test `tools/bun/metro-worker-farm.test.ts`.
-4. Uwaga przy testach serwera dev: `CI=1` wyłącza w Expo obserwowanie plików — nowy plik nie trafia do mapy plików.
-5. **Wniosek** (PLAN-1TO1.md § 2a): 1:1 najtaniej daje Metro jako silnik na Bunie; fazy 1–5 planu dla bundlera Buna
+4. **Cache Metro przez buildy natywne**: Xcode i Gradle zawsze przekazują `--reset-cache`; Expo w CI go ignoruje
+   (`exportEmbedAsync.js:202-207`), ale nie ma w kluczu wartości `EXPO_PUBLIC_*`, które `inline-env-vars`
+   (`babel-preset-expo`) wstawia w produkcji — klucz z `metro-transform-worker` Expo obejmuje tylko pliki workera,
+   config i pliki configu Babel. `metro.config.js` dopisuje hash `EXPO_PUBLIC_*`/`BABEL_ENV` do `cacheVersion`, a
+   `cli.ts` przy `RN_BUNDLER=metro` pomija `--reset-cache` dla `export:embed` (`RN_BUNDLER_RESET_CACHE=1` przywraca).
+   Test z próbnikiem `EXPO_PUBLIC_P1_PROBE` w `src/app/index.tsx` (cofniętym po teście): ciepły bundle = zimny wzorzec
+   bajt w bajt dla `one` i `two`, zmiana wartości unieważnia cache; ciepły 1,85 s vs zimny ~8 s; bundle bez próbnika
+   identyczny ze wzorcem sprzed zmiany `cacheVersion`. Zimne pomiary przy load average 82 (inne procesy) dawały
+   12–14 s — powtórzone przy normalnym obciążeniu.
+5. Uwaga przy testach serwera dev: `CI=1` wyłącza w Expo obserwowanie plików — nowy plik nie trafia do mapy plików.
+6. **Wniosek** (PLAN-1TO1.md § 2a): 1:1 najtaniej daje Metro jako silnik na Bunie; fazy 1–5 planu dla bundlera Buna
    czekają na decyzję o domyślnym silniku.
 
 ---
