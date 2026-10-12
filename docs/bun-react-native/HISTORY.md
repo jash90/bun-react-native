@@ -164,7 +164,7 @@ Druga runda „przeanalizuj ponownie i popraw” — przegląd każdej różnicy
    (`tools/bun-bundler/compare-exports.ts`: ten sam zbiór plików, treść bajt w bajt, HTML/JSON po normalizacji
    hashy `entry-…`; same bundle JS/HBC tylko co do obecności).
 
-## Etap 10 — `.env` jak w Expo, `export:embed` jak `exportEmbedAsync`, mapy źródeł w kształcie Expo
+## Etap 10 — `.env` jak w Expo, `export:embed` jak `exportEmbedAsync`, mapy źródeł w kształcie Expo, klawisze `expo start` (`5d5bebf`)
 
 Metoda: lista flag i kroków `@expo/cli/build/src/export/embed` (`resolveOptions.js`, `exportEmbedAsync.js`) oraz
 serializera map (`@expo/metro-config/build/serializer/sourceMap.js`, `serializeChunks.js`, Metro `Server.js`)
