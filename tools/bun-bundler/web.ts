@@ -14,6 +14,7 @@ import type { BunPlugin } from 'bun';
 
 import { getAssetData, type AssetData } from './assets';
 import { ASSET_REGISTRY_VIRTUAL } from './resolver';
+import type { FunctionMap } from './sourcemap';
 import { ASSET_REGISTRY_SRC, MISSING_MODULE_NAMESPACE, metafileOrder, missingModuleSource, requireContextSource, strictIife, type Project } from './shared';
 import { REQUIRE_CONTEXT_PREFIX } from './transform-worker';
 
@@ -141,6 +142,8 @@ export interface WebBuildOptions {
 export interface WebBuildResult {
   code: string;
   map: any | null; // bundle -> original sources (composed with the Babel maps)
+  /** Metro function maps per file (`x_facebook_sources`) */
+  functionMaps: Map<string, FunctionMap | null>;
   /** stylesheets in Metro's order (post-order walk of the import graph from the entry) */
   css: { originFilename: string; css: string; externalImports: CssResult['externalImports'] }[];
   assets: WebAsset[];
@@ -148,7 +151,7 @@ export interface WebBuildResult {
   /** files exporting an expo-router `loader` (Metro artifact metadata `loaderReferences`) */
   loaderFiles: string[];
   /** split chunks: file name (in _expo/static/js/web/), code, and the source files each contains / imports */
-  chunks: { name: string; code: string; inputs: string[]; imports: string[] }[];
+  chunks: { name: string; code: string; map: any | null; inputs: string[]; imports: string[] }[];
 }
 
 export async function buildWeb(project: Project, entries: string[], opts: WebBuildOptions): Promise<WebBuildResult> {
@@ -163,6 +166,7 @@ export async function buildWeb(project: Project, entries: string[], opts: WebBui
   const assetFiles = new Map<string, string[]>();
   const missingExports = new Map<string, Set<string>>();
   const babelMaps = new Map<string, any>();
+  const functionMaps = new Map<string, FunctionMap | null>();
   const modules = new Set<string>();
   const loaderFiles = new Set<string>();
   const optionalByFile = new Map<string, Set<string>>();
@@ -227,6 +231,7 @@ export async function buildWeb(project: Project, entries: string[], opts: WebBui
         }
         const res = await project.transform(file, 'module', 'esm');
         if (res.map) babelMaps.set(file, res.map);
+        functionMaps.set(file, res.functionMap ?? null);
         if (res.loaderReference) loaderFiles.add(file);
         if (res.optionalDeps?.length) optionalByFile.set(file, new Set(res.optionalDeps));
         const stubs = missingExports.get(file);
@@ -296,14 +301,16 @@ export async function buildWeb(project: Project, entries: string[], opts: WebBui
   for (const out of result.outputs.filter((o: any) => o.kind === 'chunk')) {
     const name = path.basename(out.path);
     const meta = Object.entries<any>(result.metafile?.outputs ?? {}).find(([k]) => path.basename(k) === name)?.[1];
+    const sm = opts.sourcemap ? result.outputs.find((o: any) => o.kind === 'sourcemap' && o.path === `${out.path}.map`) : null;
     chunks.push({
       name,
       code: (await out.text()).replace(/\n?\/\/# (sourceMappingURL|debugId)=.*$/gm, ''),
+      map: sm ? composeBabelMaps(project, JSON.parse(await sm.text()), babelMaps) : null,
       inputs: Object.keys(meta?.inputs ?? {}).map((k) => path.resolve(k.replace(/^[a-z][a-z-]*:(?=\/)/, ''))),
       imports: (meta?.imports ?? []).map((i: any) => path.basename(i.path)),
     });
   }
-  return { code, map, css, assets, modules: [...modules], chunks, loaderFiles: [...loaderFiles] };
+  return { code, map, functionMaps, css, assets, modules: [...modules], chunks, loaderFiles: [...loaderFiles] };
 }
 
 /** Compose Bun's map (bundle -> Babel output) with the per-file Babel maps (Babel output -> source). */

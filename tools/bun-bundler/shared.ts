@@ -6,7 +6,9 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 
 import { Resolver } from './resolver';
-import type { TransformRequest, TransformResponse } from './transform-worker';
+import type { FunctionMap, MapPiece } from './sourcemap';
+import { TransformPool } from './transform-pool';
+import type { TransformResponse } from './transform-worker';
 
 export const SOURCE_EXTS = ['ts', 'tsx', 'mjs', 'js', 'jsx', 'json', 'cjs', 'scss', 'sass', 'css'];
 export const ASSET_EXTS = ['bmp', 'gif', 'jpg', 'jpeg', 'png', 'psd', 'svg', 'webp', 'xml', 'm4v', 'mov', 'mp4', 'mpeg', 'mpg', 'webm', 'aac', 'aiff', 'caf', 'm4a', 'mp3', 'wav', 'html', 'pdf', 'yaml', 'yml', 'otf', 'ttf', 'zip', 'heic', 'avif', 'db'];
@@ -23,79 +25,7 @@ const EXTERNAL_REQUIRE_WEB_SRC = `global.$$require_external = typeof require !==
 const EXTERNAL_REQUIRE_SRC =
   'try { global.$$require_external = typeof expo === "undefined" ? require : (moduleId) => { throw new Error(`Node.js standard library module ${moduleId} is not available in this JavaScript environment`);} } catch { global.$$require_external = (moduleId) => { throw new Error(`Node.js standard library module ${moduleId} is not available in this JavaScript environment`);} }';
 
-const BUNDLER_CACHE_VERSION = 7; // bump when the transform pipeline changes
-
-// ---------------------------------------------------------------- Babel worker pool
-
-export class TransformPool {
-  private workers: Worker[] = [];
-  private idle: Worker[] = [];
-  private queue: { req: Omit<TransformRequest, 'id'>; resolve: (r: TransformResponse) => void }[] = [];
-  private pending = new Map<number, (r: TransformResponse) => void>();
-  private owner = new Map<number, Worker>();
-  private nextId = 1;
-  private size: number;
-
-  constructor(size: number) {
-    this.size = size;
-  }
-
-  private start() {
-    for (let i = 0; i < this.size; i++) {
-      const w = new Worker(new URL('./transform-worker.ts', import.meta.url).href);
-      const failOwned = (error: string) => {
-        // a crashed/exited worker must not leave callers waiting forever
-        for (const [id, done] of this.pending) {
-          if (this.owner.get(id) === w) {
-            this.pending.delete(id);
-            this.owner.delete(id);
-            done({ id, error });
-          }
-        }
-      };
-      w.onerror = (e: ErrorEvent) => failOwned(`transform worker crashed: ${e.message}`);
-      w.addEventListener('close', () => {
-        failOwned('transform worker exited unexpectedly');
-        this.idle = this.idle.filter((x) => x !== w);
-      });
-      w.onmessage = (e: MessageEvent<TransformResponse>) => {
-        this.owner.delete(e.data.id);
-        const done = this.pending.get(e.data.id);
-        this.pending.delete(e.data.id);
-        this.idle.push(w);
-        done?.(e.data);
-        this.pump();
-      };
-      this.workers.push(w);
-      this.idle.push(w);
-    }
-  }
-
-  run(req: Omit<TransformRequest, 'id'>): Promise<TransformResponse> {
-    if (!this.workers.length) this.start(); // lazily: a fully cached build never spawns workers
-    return new Promise((resolve) => {
-      this.queue.push({ req, resolve });
-      this.pump();
-    });
-  }
-
-  private pump() {
-    while (this.idle.length && this.queue.length) {
-      const w = this.idle.pop()!;
-      const job = this.queue.shift()!;
-      const id = this.nextId++;
-      this.pending.set(id, job.resolve);
-      this.owner.set(id, w);
-      w.postMessage({ ...job.req, id });
-    }
-  }
-
-  close() {
-    for (const w of this.workers) w.terminate();
-    this.workers = [];
-    this.idle = [];
-  }
-}
+const BUNDLER_CACHE_VERSION = 8; // bump when the transform pipeline changes
 
 // ---------------------------------------------------------------- project context
 
@@ -430,7 +360,7 @@ export function createProject(opts: ProjectOptions) {
     const res = await pool.run({ filename, src: source, projectRoot, platform, dev, minify, type, format, customTransformOptions });
     if (res.error) throw new Error(res.error);
     stats.transformed++;
-    await Bun.write(cacheFile, JSON.stringify({ code: res.code, map: res.map, deps: res.deps, esmDeps: res.esmDeps, asyncDeps: res.asyncDeps, loaderReference: res.loaderReference, domComponentReference: res.domComponentReference, optionalDeps: res.optionalDeps }));
+    await Bun.write(cacheFile, JSON.stringify({ code: res.code, map: res.map, deps: res.deps, esmDeps: res.esmDeps, asyncDeps: res.asyncDeps, loaderReference: res.loaderReference, domComponentReference: res.domComponentReference, optionalDeps: res.optionalDeps, functionMap: res.functionMap }));
     return res;
   }
 
@@ -448,18 +378,37 @@ export function createProject(opts: ProjectOptions) {
     );
   }
 
-  /** Polyfills, transformed as scripts and wrapped with `global` exactly like Metro. */
-  async function polyfillSources(): Promise<string[]> {
-    const out: string[] = [];
+  /**
+   * Polyfills, transformed as scripts and wrapped with `global` exactly like Metro, with their maps (virtual
+   * polyfills are listed as sources without mappings).
+   */
+  async function polyfillPieces(): Promise<(MapPiece & { file: string; functionMap?: FunctionMap | null })[]> {
+    const out: (MapPiece & { file: string; functionMap?: FunctionMap | null })[] = [];
+    const wrap = (code: string) => `(function (global) {\n${code}\n})(${SCRIPT_WRAPPER_GLOBAL});`;
     for (const f of polyfillFiles) {
-      let code: string;
-      if (f === EXTERNAL_REQUIRE_POLYFILL) code = isWeb ? EXTERNAL_REQUIRE_WEB_SRC : EXTERNAL_REQUIRE_SRC;
-      // Expo environmentVariableSerializerPlugin: EXPO_PUBLIC_* on process.env in client dev bundles (production inlines)
-      else if (f === ENV_VARS_POLYFILL) code = dev && !isServer ? projectRequire('@expo/metro-config/build/serializer/environmentVariableSerializerPlugin').getEnvVarDevString() : '//';
-      else code = (await transform(f, 'script', 'esm')).code ?? '';
-      out.push(`(function (global) {\n${code}\n})(${SCRIPT_WRAPPER_GLOBAL});`);
+      if (f === EXTERNAL_REQUIRE_POLYFILL || f === ENV_VARS_POLYFILL) {
+        const code =
+          f === EXTERNAL_REQUIRE_POLYFILL
+            ? isWeb
+              ? EXTERNAL_REQUIRE_WEB_SRC
+              : EXTERNAL_REQUIRE_SRC
+            : // Expo environmentVariableSerializerPlugin: EXPO_PUBLIC_* on process.env in client dev bundles (production inlines)
+              dev && !isServer
+              ? projectRequire('@expo/metro-config/build/serializer/environmentVariableSerializerPlugin').getEnvVarDevString()
+              : '//';
+        out.push({ file: f, code: wrap(code), source: f });
+        continue;
+      }
+      const res = await transform(f, 'script', 'esm');
+      // the wrapper adds one line above the transformed code
+      const map = res.map ? { ...res.map, mappings: ';' + res.map.mappings } : null;
+      out.push({ file: f, code: wrap(res.code ?? ''), map, functionMap: res.functionMap });
     }
     return out;
+  }
+
+  async function polyfillSources(): Promise<string[]> {
+    return (await polyfillPieces()).map((p) => p.code);
   }
 
   return {
@@ -481,6 +430,7 @@ export function createProject(opts: ProjectOptions) {
     transform,
     prelude,
     polyfillSources,
+    polyfillPieces,
     stats,
     close: () => pool.close(),
   };

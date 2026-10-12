@@ -18,6 +18,7 @@ import path from 'node:path';
 import { expoHelpers, type ExportFiles } from './expo-helpers';
 import { createProject, getAsyncRoutes, getRouterRoot, type Project } from './shared';
 import { createLoaderRunner } from './loaders';
+import { PRELUDE_SOURCE, concatPieces, debugIdFor, finalizeMap, relativeSources, serverRootOf, type MapPiece } from './sourcemap';
 import { buildWeb, cssHmrId, md5, webAssetFiles, type WebBuildResult } from './web';
 
 export interface WebExportOptions {
@@ -56,28 +57,38 @@ export function cssArtifacts(entry: WebBuildResult['css'][number], exporting: bo
 
 /** Serial assets (Metro's `artifacts`) of a client build: what Expo's HTML serializer consumes. */
 export function clientArtifacts(project: Project, build: WebBuildResult, opts: { dev: boolean; baseUrl: string; sourceMaps: boolean; entry: string }) {
-  const head = [project.prelude(), ...polyfillsOf(project)].join('\n');
+  const polyfills = polyfillsOf(project);
+  const head = [project.prelude(), ...polyfills.map((p) => p.code)].join('\n');
   const entryName = path.basename(opts.entry).replace(/\.\w+$/, '');
   const originFilename = path.relative(project.projectRoot, opts.entry);
   const artifacts: any[] = build.css.flatMap((entry) => cssArtifacts(entry, true));
   const jsMeta = (extra: object) => ({ isAsync: false, requires: [], modulePaths: build.modules, paths: {}, expoDomComponentReferences: [], reactClientReferences: [], reactServerReferences: [], ...extra });
   // code splitting: the entry is an ES module, so the prelude and polyfills (globals) run first as a classic script
   const split = build.chunks.length > 0;
+  const { projectRoot, projectRequire } = project;
+  /** Expo-shaped map of a JS artifact + its annotations (external maps only) */
+  const mapFor = (file: string, pieces: MapPiece[]) => {
+    const debugId = debugIdFor(path.basename(file, '.js'), projectRequire);
+    const map = finalizeMap(concatPieces(pieces, projectRequire).map, { projectRoot, serverRoot: serverRootOf(projectRoot, projectRequire), projectRequire, functionMaps: build.functionMaps, debugId });
+    return { map, annotations: `\n//# sourceMappingURL=${opts.baseUrl}/${file}.map\n//# debugId=${debugId}` };
+  };
+  const headPieces: MapPiece[] = [{ code: project.prelude(), source: PRELUDE_SOURCE }, ...polyfills];
   let runtimeName: string | null = null;
   if (split) {
     runtimeName = `_expo/static/js/web/runtime-${md5(head)}.js`;
-    artifacts.push({ type: 'js', originFilename, filename: runtimeName, source: head, metadata: jsMeta({ modulePaths: [] }) });
+    // prelude + polyfills as a classic script (Metro: the `__expo-metro-runtime` chunk), with its own map
+    const runtime = opts.sourceMaps ? mapFor(runtimeName, headPieces) : null;
+    artifacts.push({ type: 'js', originFilename, filename: runtimeName, source: head + (runtime?.annotations ?? ''), metadata: jsMeta({ modulePaths: [] }) });
+    if (runtime) artifacts.push({ type: 'map', originFilename, filename: `${runtimeName}.map`, source: JSON.stringify(runtime.map), metadata: {} });
   }
   const js = split ? build.code : `${head}\n${build.code}`;
   const filename = `_expo/static/js/web/${entryName}-${md5(js)}.js`;
-  const source = opts.sourceMaps ? `${js}\n//# sourceMappingURL=${opts.baseUrl}/${filename}.map` : js;
+  // prelude (listed, unmapped) + polyfills (their Babel maps) + module graph, shaped like Expo's export maps
+  const entryMap = opts.sourceMaps && build.map ? mapFor(filename, split ? [{ code: build.code, map: build.map }] : [...headPieces, { code: build.code, map: build.map }]) : null;
+  const map = entryMap?.map ?? null;
+  const source = opts.sourceMaps ? js + (entryMap?.annotations ?? `\n//# sourceMappingURL=${opts.baseUrl}/${filename}.map`) : js;
   artifacts.push({ type: 'js', originFilename, filename, source, metadata: jsMeta({ requires: runtimeName ? [runtimeName] : [], esModule: split }) });
-  if (opts.sourceMaps && build.map) {
-    // the module graph starts below the (unmapped) prelude and polyfills
-    const headLines = split ? 0 : head.split('\n').length;
-    const map = { ...build.map, mappings: ';'.repeat(headLines) + build.map.mappings };
-    artifacts.push({ type: 'map', originFilename, filename: `${filename}.map`, source: JSON.stringify(map), metadata: {} });
-  }
+  if (map) artifacts.push({ type: 'map', originFilename, filename: `${filename}.map`, source: JSON.stringify(map), metadata: {} });
   return artifacts;
 }
 
@@ -102,14 +113,14 @@ export function splitClientHtml(html: string, artifacts: any[], build: WebBuildR
   return links ? html.replace('</head>', `${links}</head>`) : html;
 }
 
-const polyfillCache = new WeakMap<Project, string[]>();
+const polyfillCache = new WeakMap<Project, Awaited<ReturnType<Project['polyfillPieces']>>>();
 function polyfillsOf(project: Project) {
   const p = polyfillCache.get(project);
   if (!p) throw new Error('polyfills not loaded');
   return p;
 }
 export async function loadPolyfills(project: Project) {
-  polyfillCache.set(project, await project.polyfillSources());
+  polyfillCache.set(project, await project.polyfillPieces());
 }
 
 /** Import an ES module bundle (render.js) built for Bun from a content-addressed file. */
@@ -128,7 +139,8 @@ export async function importServerBundle(projectRoot: string, code: string, name
 export async function buildServerFunction(project: Project, file: string, opts: { minify: boolean }) {
   const build = await buildWeb(project, [file], { kind: 'function', minify: opts.minify, sourcemap: true });
   // the module file is strict like Metro's ES modules (the directive must open the file)
-  return { src: `"use strict";\n${project.prelude()}\n${build.code}`, map: build.map ? { ...build.map, mappings: ';;' + build.map.mappings } : null };
+  const map = build.map ? relativeSources({ ...build.map, mappings: ';;' + build.map.mappings }, project) : null;
+  return { src: `"use strict";\n${project.prelude()}\n${build.code}`, map };
 }
 
 /** Same layout as Expo CLI's exportServerRouteAsync: `name.js` + `name.js.map` in the server domain. */
@@ -177,7 +189,18 @@ export async function exportWebAsync(opts: WebExportOptions) {
   }
   const artifacts = clientArtifacts(client, build, { dev, baseUrl, sourceMaps: opts.sourceMaps, entry: entryFile });
   h.getFilesFromSerialAssets(artifacts, { platform: 'web', includeSourceMaps: opts.sourceMaps, files, isServerHosted: true });
-  for (const chunk of build.chunks) files.set(`_expo/static/js/web/${chunk.name}`, { contents: chunk.code, targetDomain: 'client' });
+  for (const chunk of build.chunks) {
+    const filename = `_expo/static/js/web/${chunk.name}`;
+    let contents = chunk.code;
+    if (opts.sourceMaps && chunk.map) {
+      // like the entry: Expo-shaped map + `sourceMappingURL` / `debugId` annotations (Metro writes one per chunk)
+      const debugId = debugIdFor(path.basename(chunk.name, '.js'), client.projectRequire);
+      const map = finalizeMap(chunk.map, { projectRoot, serverRoot: serverRootOf(projectRoot, client.projectRequire), projectRequire: client.projectRequire, functionMaps: build.functionMaps, debugId });
+      contents += `\n//# sourceMappingURL=${baseUrl}/${filename}.map\n//# debugId=${debugId}`;
+      files.set(`${filename}.map`, { contents: JSON.stringify(map), targetDomain: 'client' });
+    }
+    files.set(filename, { contents, targetDomain: 'client' });
+  }
   // web assets: Expo names them `name.<hash>` and writes every scale below `assets/`
   for (const [dest, src] of webAssetFiles(build.assets)) {
     files.set(dest.replace(new RegExp(`^${baseUrl.replace(/^\//, '')}/?`), ''), {

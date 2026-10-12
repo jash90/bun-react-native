@@ -58,4 +58,7 @@ Docs: https://docs.expo.dev/eas/index.md
   Server Components still need Metro. `bun run start:metro` / `web:metro` / `export:metro` are the Metro escape hatch.
   After changing it run `bun run test:tools`, bundle both platforms, compile with `hermesc`, compare `export` with
   `export:metro` and check web in a browser. Details: `docs/bun-react-native/BUNDLER.md`.
+- `.env` files are loaded by the bundler like Expo CLI (`.env.<mode from --dev>`, `tools/bun-bundler/env.ts`); Bun's own
+  automatic `.env` loading stays off (`env = false` in `bunfig.toml`, `--no-env-file` in the shim) - it would pick
+  `.env.development` for release bundles.
 - `bun.lock` must reference the default registry (`""`); `bunfig.toml` pins `https://registry.npmjs.org/`.

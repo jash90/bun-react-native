@@ -14,6 +14,8 @@ import path from 'node:path';
 
 import { bundle } from './bundle';
 import { exportDomComponents } from './dom';
+import { loadProjectEnv } from './env';
+import { appendDebugId, debugIdFor } from './sourcemap';
 import { expoHelpers, type ExportFiles } from './expo-helpers';
 import { getBaseUrl, getExpoConfig } from './shared';
 import { md5 } from './web';
@@ -58,27 +60,35 @@ async function exportNativeBundle(opts: ExportOptions, platform: Exclude<ExportP
       hostedAssets: opts.hostedNative,
       log: opts.log,
     });
-    let code = fs.readFileSync(jsFile, 'utf8');
+    let code = result.code;
     // DOM components: content-addressed web bundles; the proxy's `<md5(url)>.html` points at the html's md5
     const dom = await exportDomComponents({ projectRoot, references: result.domComponents, dev: opts.dev, md5Filenames: true, files });
     for (const d of dom) if (d.replace) code = code.split(d.replace[0]).join(d.replace[1]);
-    const map = mapFile ? fs.readFileSync(mapFile, 'utf8') : null;
-    const base = `_expo/static/js/${platform}/${path.basename(entry).replace(/\.\w+$/, '')}-${md5(code)}`;
+    const stem = `${path.basename(entry).replace(/\.\w+$/, '')}-${md5(code)}`;
+    const base = `_expo/static/js/${platform}/${stem}`;
+    const inline = !!opts.inlineSourceMaps;
+    // Expo: external maps carry the debug id of the content-hashed file name (none for inline maps)
+    const debugId = result.map && !inline ? debugIdFor(stem, h.req) : undefined;
+    const map = result.map ? JSON.stringify(debugId ? { ...result.map, debugId } : result.map) : null;
     // Expo compiles bytecode for production Hermes exports only (MetroBundlerDevServer isHermesEnabled: !dev)
     const hermes = opts.bytecode && !opts.dev && h.isEnableHermesManaged(exp, platform);
     let fileName: string;
     const targetDomain = opts.hostedNative ? ('client' as const) : undefined;
-    const inline = !!opts.inlineSourceMaps;
     if (hermes) {
       // inline maps cannot live in bytecode: Expo compiles without a map then
       const out = await h.buildHermesBundleAsync({ projectRoot, filename: entry, code, map: inline ? null : map, minify: true });
       fileName = `${base}.hbc`;
       files.set(fileName, { contents: out.hbc, originFilename: entry, targetDomain });
-      if (map && !inline && out.sourcemap) files.set(`${fileName}.map`, { contents: out.sourcemap, originFilename: entry, targetDomain });
+      if (map && !inline && out.sourcemap) files.set(`${fileName}.map`, { contents: appendDebugId(out.sourcemap, debugId!), originFilename: entry, targetDomain });
     } else {
       fileName = `${base}.js`;
-      const comment = !map ? '' : inline ? `\n//# sourceMappingURL=data:application/json;charset=utf-8;base64,${Buffer.from(map).toString('base64')}` : `\n//# sourceMappingURL=${path.basename(fileName)}.map`;
-      files.set(fileName, { contents: code + comment, originFilename: entry, targetDomain });
+      // Metro's export writes the map URL of its export server (http://localhost:8081/...) + the debug id
+      const comment = !map
+        ? ''
+        : inline
+          ? `\n//# sourceMappingURL=data:application/json;charset=utf-8;base64,${Buffer.from(map).toString('base64')}`
+          : `\n//# sourceMappingURL=http://localhost:8081/${fileName}.map\n//# debugId=${debugId}`;
+      files.set(fileName, { contents: comment ? code.replace(/\n$/, '') + comment : code, originFilename: entry, targetDomain });
       if (map && !inline) files.set(`${fileName}.map`, { contents: map, originFilename: entry, targetDomain });
     }
     opts.log(`${{ ios: 'iOS', android: 'Android', tvos: 'tvOS', macos: 'macOS' }[platform]} Bundled with Bun (${result.modules.length} files) -> ${fileName}`);
@@ -93,10 +103,7 @@ export async function exportAppAsync(opts: ExportOptions) {
   const { projectRoot } = opts;
   const h = expoHelpers(projectRoot);
   // like Expo CLI: force the environment, load .env files for EXPO_PUBLIC_* inlining
-  const nodeEnv = h.req('@expo/cli/build/src/utils/nodeEnv');
-  process.env.NODE_ENV = opts.dev ? 'development' : 'production';
-  nodeEnv.setNodeEnv(process.env.NODE_ENV);
-  nodeEnv.loadEnvFiles(projectRoot);
+  loadProjectEnv(projectRoot, opts.dev ? 'development' : 'production', { force: true });
   const exp = getExpoConfig(projectRoot);
   if (exp.experiments?.reactServerComponentRoutes || exp.experiments?.reactServerFunctions) {
     throw new Error('React Server Components are not supported by the Bun bundler (use `bun run export:metro`)');

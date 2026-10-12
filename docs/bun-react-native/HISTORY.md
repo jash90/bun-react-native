@@ -164,6 +164,53 @@ Druga runda „przeanalizuj ponownie i popraw” — przegląd każdej różnicy
    (`tools/bun-bundler/compare-exports.ts`: ten sam zbiór plików, treść bajt w bajt, HTML/JSON po normalizacji
    hashy `entry-…`; same bundle JS/HBC tylko co do obecności).
 
+## Etap 10 — `.env` jak w Expo, `export:embed` jak `exportEmbedAsync`, mapy źródeł w kształcie Expo
+
+Metoda: lista flag i kroków `@expo/cli/build/src/export/embed` (`resolveOptions.js`, `exportEmbedAsync.js`) oraz
+serializera map (`@expo/metro-config/build/serializer/sourceMap.js`, `serializeChunks.js`, Metro `Server.js`)
+porównana punkt po punkcie z `tools/bun-bundler`, każda różnica sprawdzona eksperymentem na fiksturze.
+
+1. **`.env` (błąd funkcjonalny).** Fikstura z `.env.production` (`EXPO_PUBLIC_X=production-file`) i `.env.development`:
+   - `bun tools/bun-bundler/cli.ts export:embed --dev false` wstawiał `development-file` — Bun sam wczytuje
+     `.env.<NODE_ENV z chwili startu>` (bez `NODE_ENV`: development), a `@expo/env` traktuje to jak zmienne z powłoki;
+   - przez shim `node` (Xcode/Gradle) — `undefined`: shim ma `--no-env-file`, a `export:embed` nie wczytywał plików;
+   - Metro: `production-file`.
+   Poprawka: `env.ts` (Expo `setNodeEnv` + `loadEnvFiles`) w `export:embed`, `export`, `start` (+ przeładowanie po
+   zmianie pliku, jak `watchEnvironmentVariables`), `bunfig.toml` `env = false`. Drugi błąd wyszedł przy weryfikacji:
+   wartości nadal `undefined`, bo **Bun `Worker` nie widzi zmian `process.env` z wątku głównego** (test w `/tmp`:
+   `new Worker()` → `missing`, z `{ env }` → OK; `worker_threads` → OK) — pula transformacji dostaje `env`.
+   Wynik: bezpośrednio i przez shim `production-file`, zmienna z powłoki wygrywa (`shell`), OTA `production-file`, dev
+   `development-file` i po edycji pliku nowa wartość bez restartu (jak Metro). KNOWN-ISSUES #12, #13.
+2. **`export:embed`** (`embed.ts`, wydzielony z `cli.ts`): domyślnie `--dev true` i wejście z `package.json` (wcześniej
+   `index.js` — błąd „Unable to resolve index.js” bez `--entry-file`), usuwanie starego bundla i kopii w `.app`,
+   `--bytecode` (wynik: bytecode Hermes v98 + mapa z tymi samymi kluczami co Metro), `--sourcemap-use-absolute-path`,
+   `--sourcemap-sources-root`, `--bundle-encoding`, `--max-workers`, błędy w formacie Xcode. `expo run … Release`
+   robi wcześniej prebundle Metro („eager”) — ignorowany z komunikatem (opis w BUNDLER.md).
+3. **Mapy źródeł** — porównanie kluczy i zawartości z Metro wykazało: brak `//# sourceMappingURL`/`//# debugId` w
+   bundlu embed, brak `debugId`, `x_google_ignoreList`, `x_facebook_sources`, prelude i polyfille bez mapowań oraz
+   **bezwzględne ścieżki dysku w `sources`** (`rn-asset:/Users/…`, `rn-context:…`), których Expo celowo unika.
+   Ustalone z kodu i danych: `debugId = stringToUUID("<wejście>-<md5 kodu>")` — dla bundla Metro z
+   `entry-76d29103…` daje dokładnie `bb3e99a3-…` z `main.jsbundle` Metro (test jednostkowy). Poprawka: `sourcemap.ts`
+   (sklejanie map prelude/polyfilli/grafu, ścieżki `/…` względem roota serwera, `?ctx=<sha1>` jak Metro, ignore list
+   wg reguły Metro/Expo, `functionMapBabelPlugin` w workerze → `x_facebook_sources`), adnotacje jak Metro (eksport
+   natywny: `http://localhost:8081/…map`, web: `/_expo/…map`), mapa `.hbc.map` z `debugId`; mapy funkcji serwerowych
+   względne bez `/` (jak Metro), mapy dev z bezwzględnymi ścieżkami, `x_google_ignoreList` (wcześniej pusta lista —
+   DevTools nie ukrywał ramek `node_modules`) i `x_facebook_sources`.
+   Weryfikacja: zestawy kluczy map identyczne z Metro dla embed, `.hbc.map`, web i JS natywnego; pozycje
+   (`explore.tsx:102:29`, `console.js:45:11`) mapują się tak samo jak w Metro; `/symbolicate` w dev bez zmian;
+   `compare:export` 0 różnic; 36 testów `bun test tools`. Przy `asyncRoutes` na web chunki i `runtime-*.js` nie
+   miały map (Metro: mapa dla każdego chunka) — dodane, z `debugId`; pozycje w chunku `explore` mapują się na
+   `explore.tsx:102:29`.
+4. **`bun run start` jak `expo start`** (`terminal.ts`): brakowało całego interfejsu terminala Expo. Klawisze
+   wysyłają komunikaty `/message` jak `broadcastMessage` Expo (`reload`, `devMenu`, `sendDevCommand`), `j` używa
+   `JsInspector` Expo; `--clear`, `-p`, `-i/-a/-w`. Sprawdzone w pseudo-TTY (`script -F`) z aplikacją Debug na
+   symulatorze: `m` otwiera „React Native Dev Menu”, `r` przeładowuje (nowe żądanie bundla), `?`, Ctrl+C zwalnia port.
+   Projekt nie ma `expo-dev-client`, więc Expo otworzyłby Expo Go — tu `i`/`a` uruchamiają zainstalowany build dev
+   (manifest Expo Go nieobsługiwany — BUNDLER.md).
+5. Build Release iOS (`xcodebuild`, czysty `derivedDataPath`): `BUILD SUCCEEDED`, bundle Bun 2,0 s, bytecode Hermes
+   v98; aplikacja na symulatorze: ekran główny i zakładka Explore. Mapy jak w skrypcie RN (`hermesc
+   -output-source-map` + `compose-source-maps.js`) — te same klucze co przy mapie Metro.
+
 ---
 
 ## Jak powtórzyć weryfikację

@@ -40,6 +40,8 @@ export interface TransformResponse {
   domComponentReference?: string;
   /** specifiers only required inside try blocks / `import()` with a rejection handler (Metro optional deps) */
   optionalDeps?: string[];
+  /** Metro function map (functionMapBabelPlugin): `x_facebook_sources` of exported source maps */
+  functionMap?: { names: string[]; mappings: string } | null;
   error?: string;
 }
 
@@ -49,6 +51,7 @@ let babel: {
   babelRuntimeVersion: string | undefined;
   parseEnvFile: (src: string, isClient: boolean) => Record<string, string>;
   transformer: any;
+  functionMapBabelPlugin: any;
   generate: any;
   traverse: any;
   t: any;
@@ -67,6 +70,7 @@ function load(projectRoot: string) {
     babelRuntimeVersion,
     parseEnvFile: req('@expo/metro-config/build/transform-worker/dot-env-development').parseEnvFile,
     transformer: req('@expo/metro-config/build/babel-transformer'),
+    functionMapBabelPlugin: req('@expo/metro/metro-source-map').functionMapBabelPlugin,
     generate: req('@babel/generator').default,
     traverse: req('@babel/traverse').default,
     t: req('@babel/types'),
@@ -263,8 +267,10 @@ function transform(req: TransformRequest): TransformResponse {
     customTransformOptions: req.customTransformOptions,
   };
   const src = expoPreTransform(req, b);
-  const { ast, metadata } = b.transformer.transform({ filename: req.filename, src, options, plugins: [] });
+  // like Expo's transform worker: functionMapBabelPlugin fills metadata.metro.functionMap
+  const { ast, metadata } = b.transformer.transform({ filename: req.filename, src, options, plugins: [b.functionMapBabelPlugin] });
   if (!ast) return { id: req.id, code: '' };
+  const functionMap = metadata?.metro?.functionMap ?? null;
   const loaderReference = metadata?.loaderReference ? true : undefined;
   const domComponentReference: string | undefined = metadata?.expoDomComponentReference ?? undefined;
   if (src.includes('require.context')) rewriteRequireContext(ast, b);
@@ -307,11 +313,11 @@ function transform(req: TransformRequest): TransformResponse {
       comments: false,
       plugins: [collectDependencies(deps, asyncDeps)],
     });
-    return { id: req.id, code: out.code, map: out.map, deps, esmDeps: deps.filter((d) => esmDeps.has(d)), asyncDeps, loaderReference, domComponentReference, optionalDeps };
+    return { id: req.id, code: out.code, map: out.map, deps, esmDeps: deps.filter((d) => esmDeps.has(d)), asyncDeps, loaderReference, domComponentReference, optionalDeps, functionMap };
   }
   const optionalDeps = optionalSpecifiers(ast, b, ['require']);
   const out = b.generate(ast, { sourceMaps: true, sourceFileName: req.filename, filename: req.filename, comments: false }, src);
-  return { id: req.id, code: out.code, map: out.map, loaderReference, domComponentReference, optionalDeps };
+  return { id: req.id, code: out.code, map: out.map, loaderReference, domComponentReference, optionalDeps, functionMap };
 }
 
 self.onmessage = (event: MessageEvent<TransformRequest>) => {

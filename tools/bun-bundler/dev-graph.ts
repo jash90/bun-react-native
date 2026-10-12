@@ -13,6 +13,7 @@ import path from 'node:path';
 import { getAssetData } from './assets';
 import { ASSET_REGISTRY_VIRTUAL } from './resolver';
 import { ASSET_REGISTRY_SRC, contextModuleSource, missingModuleSource, createProject, listContextFiles, type ContextSpec, type Platform, type Project } from './shared';
+import type { FunctionMap } from './sourcemap';
 import { REQUIRE_CONTEXT_PREFIX } from './transform-worker';
 import { transformCss } from './web';
 
@@ -28,6 +29,7 @@ interface Mod {
   loaded: boolean; // false: only known as an async dependency (id assigned, not transformed yet)
   code: string; // CommonJS module body
   map: any | null; // source map of `code` (Babel), null for generated modules
+  functionMap?: FunctionMap | null; // Metro function map (`x_facebook_sources` of the served map)
   name: string; // verbose name (project-relative)
   inverse: Set<string>; // keys of modules depending on this one
   contextSpec?: ContextSpec;
@@ -176,6 +178,7 @@ export class DevGraph {
         const res = await this.project.transform(key, 'module', 'metro');
         mod.code = res.code ?? '';
         mod.map = res.map ?? null;
+        mod.functionMap = res.functionMap ?? null;
         const esm = new Set(res.esmDeps ?? []);
         const asyncIdx = new Set(res.asyncDeps ?? []);
         const optional = new Set(res.optionalDeps ?? []);
@@ -296,6 +299,11 @@ export class DevGraph {
     const { parts, sections } = this.modulesWithMap(this.syncClosure([file]), '');
     parts.push(`//# sourceMappingURL=${mapUrl}\n//# sourceURL=${bundleUrl}\n`);
     return { code: parts.join(''), map: { version: 3, sections } };
+  }
+
+  /** function map of a module file (absolute path) */
+  functionMapOf(file: string): FunctionMap | null {
+    return this.modules.get(file)?.functionMap ?? null;
   }
 
   private relativeMap(map: any) {

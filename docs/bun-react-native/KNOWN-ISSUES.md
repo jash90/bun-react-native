@@ -20,6 +20,8 @@ Jak sprawdzić, czy poprawka już jest: `bun upgrade --canary` w osobnym środow
 | 9 | Świeży `bun install` rozwiązuje peer `"*"` do najnowszej wersji (`@react-native/metro-config` 0.87.1 przy RN 0.86.3; npm daje 0.86.3) | zachowanie Buna | migracja z lockfile'a npm/yarn + pin w `devDependencies` | `bun pm ls --all \| grep metro-config` | — (stała praktyka) |
 | 10 | `NODE_OPTIONS=--require …` ignorowane przez Buna; `BUN_OPTIONS` ignorowane, gdy `bunfig.toml` ma `preload` | zachowanie Buna | preloady tylko w `bunfig.toml` | — | — |
 | 11 | `bunfig.toml` czytany tylko z cwd (nie z katalogów nadrzędnych) | zachowanie Buna | `bunfig.toml` w katalogu każdej aplikacji | — | — |
+| 12 | `bun plik.ts` sam wczytuje `.env` i `.env.<NODE_ENV z chwili startu>` (bez `NODE_ENV`: `.env.development`) jako zwykłe zmienne procesu; Expo (`@expo/env`) traktuje je jak zmienne z powłoki (wygrywają z plikami), więc build Release wstawiał wartości z `.env.development` | zachowanie Buna, udokumentowane (wyłączane tylko w trybie aliasu `node`) | `bunfig.toml` `env = false` + `tools/bin/node --no-env-file`; bundler wczytuje pliki jak Expo CLI (`tools/bun-bundler/env.ts`) | `.env.production` z `EXPO_PUBLIC_X=prod`, `.env.development` z `=dev`; `bun tools/bun-bundler/cli.ts export:embed --dev false …` → w bundlu `"prod"` | — (stała praktyka) |
+| 13 | Web `Worker` Buna widzi środowisko procesu z chwili startu, nie późniejsze zmiany `process.env` w wątku głównym (`node:worker_threads.Worker` dostaje bieżącą kopię, jak w Node) | brak issue (stan 1.4.3) | `new Worker(url, { env: { ...process.env } })` w puli transformacji | `process.env.X='1'; new Worker(…)` → w workerze `process.env.X === '1'` | test zielony |
 
 ## Minifikacja Bunem (tools/bun/metro-minifier.js)
 

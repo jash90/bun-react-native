@@ -18,6 +18,8 @@ import type { Server, ServerWebSocket } from 'bun';
 import { getAssetRecord } from './assets';
 import { DevGraph, type HmrUpdate } from './dev-graph';
 import { domComponentHtml, domRoot } from './dom';
+import { loadProjectEnv, projectEnvFiles, reloadProjectEnv } from './env';
+import { devClientMap } from './sourcemap';
 import { createWebDevHandler } from './web-dev';
 
 export interface DevServerOptions {
@@ -36,6 +38,9 @@ const IGNORED_DIRS = /(^|[\\/])(node_modules|\.git|ios|android|\.expo|dist|cover
 
 export async function startDevServer(opts: DevServerOptions) {
   const { projectRoot, port } = opts;
+  // like `expo start`: development mode, .env files loaded before any bundle (and its transform workers) exists
+  loadProjectEnv(projectRoot, 'development');
+  const envFiles = projectEnvFiles(projectRoot);
   const req = createRequire(path.join(projectRoot, 'package.json'));
   const { TraceMap, FlattenMap, originalPositionFor, encodedMap } = req('@jridgewell/trace-mapping');
   const pkg = JSON.parse(fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf8'));
@@ -53,9 +58,9 @@ export async function startDevServer(opts: DevServerOptions) {
   const labelOf = (key: string) => PLATFORM_LABEL[platformOfKey(key)] + (key.includes('|dom:') ? ' DOM component' : '');
   const hotClients = new Set<ServerWebSocket<WsData>>();
   const messageClients = new Set<ServerWebSocket<WsData>>();
-  const mapCache = new Map<string, { raw: any; flat: any; trace: any }>();
+  const mapCache = new Map<string, { raw: any; flat: any; trace: any; graph: DevGraph }>();
   /** lazy bundles (`modulesOnly=true`): source maps by `<platform> <pathname>` */
-  const lazyMaps = new Map<string, { raw: any; flat: any; trace: any }>();
+  const lazyMaps = new Map<string, { raw: any; flat: any; trace: any; graph: DevGraph }>();
   const lazyKey = (u: URL) => `${keyOf(u)} ${u.pathname.replace(/\.(bundle|map)$/, '')}`;
 
   /** `/<path>.bundle?modulesOnly=true`: the lazy bundle of the file at <path> (Metro async import) */
@@ -69,14 +74,17 @@ export async function startDevServer(opts: DevServerOptions) {
     const mapUrl = new URL(bundleUrl);
     mapUrl.pathname = bundleUrl.pathname.replace(/\.bundle$/, '.map');
     const result = await g.serializeLazy(r.filePath, bundleUrl.toString(), mapUrl.toString());
-    lazyMaps.set(lazyKey(url), { raw: result.map, flat: null, trace: null });
+    lazyMaps.set(lazyKey(url), { raw: result.map, flat: null, trace: null, graph: g });
     return result.code;
   }
+  /** the served map: Metro's shape (absolute sources, function maps, ignore list); symbolication uses `trace` */
+  const clientMap = (flat: any, g: DevGraph) => devClientMap(flat, { projectRoot, projectRequire: req, functionMapOf: (f) => g.functionMapOf(f) });
+
   function flatLazyMap(key: string) {
     const entry = lazyMaps.get(key);
     if (entry && !entry.trace) {
       entry.trace = new FlattenMap(entry.raw);
-      entry.flat = encodedMap(entry.trace);
+      entry.flat = clientMap(encodedMap(entry.trace), entry.graph);
     }
     return entry ?? null;
   }
@@ -114,7 +122,7 @@ export async function startDevServer(opts: DevServerOptions) {
     mapUrl.pathname = url.pathname.replace(/\.bundle$/, '.map');
     const result = await g.serialize(url.toString(), mapUrl.toString());
     mapCache.delete(key);
-    mapCache.set(key, { raw: result.map, flat: null, trace: null });
+    mapCache.set(key, { raw: result.map, flat: null, trace: null, graph: g });
     lastBundleUrl.set(key, url.toString());
     const { cacheHits, transformed } = g.project.stats;
     console.log(
@@ -129,7 +137,7 @@ export async function startDevServer(opts: DevServerOptions) {
     if (!entry) return null;
     if (!entry.trace) {
       entry.trace = new FlattenMap(entry.raw);
-      entry.flat = encodedMap(entry.trace);
+      entry.flat = clientMap(encodedMap(entry.trace), entry.graph);
     }
     return entry;
   }
@@ -150,6 +158,8 @@ export async function startDevServer(opts: DevServerOptions) {
   const web = createWebDevHandler({ projectRoot, port });
 
   async function onFilesChanged(files: string[]) {
+    // Expo watchEnvironmentVariables: a changed .env file reloads the variables (dev bundles read them on serialization)
+    if (files.some((f) => envFiles.includes(f))) reloadProjectEnv(projectRoot);
     web.invalidate(files);
     for (const [key, g] of graphs) {
       const platform = platformOfKey(key);
@@ -307,7 +317,11 @@ export async function startDevServer(opts: DevServerOptions) {
   });
 
   console.log(`Bun dev server listening on http://localhost:${server.port}`);
-  return server;
+  /** Expo's broadcastMessage: `{ version: 2, method, params }` to every app connected to `/message` */
+  const broadcast = (method: string, params?: object) => {
+    for (const ws of messageClients) ws.send(JSON.stringify({ version: 2, method, params }));
+  };
+  return { server, port: server.port as number, broadcast };
 }
 
 // ---------------------------------------------------------------- assets

@@ -5,6 +5,10 @@
 # NOT worker_threads - see metro.config.js).
 preload = ["./tools/bun/node-compat.preload.js", "./tools/bun/jest.preload.js"]
 
+# No automatic .env loading (like Node): the bundler and Expo CLI load .env.<mode> for the command's mode
+# themselves (tools/bun-bundler/env.ts); Bun would pick .env.development for release bundles.
+env = false
+
 # Do not set `[run] bun = true`: like `--bun`, it puts Bun's `node` alias (oven-sh/bun#40482) in front of
 # tools/bin/node for child processes.
 

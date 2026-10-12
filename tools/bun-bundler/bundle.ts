@@ -16,6 +16,7 @@ import { expoHelpers } from './expo-helpers';
 import { transformCss } from './web';
 import { ASSET_REGISTRY_VIRTUAL } from './resolver';
 import { ASSET_REGISTRY_SRC, MISSING_MODULE_NAMESPACE, createProject, metafileOrder, missingModuleSource, requireContextSource, strictIife } from './shared';
+import { PRELUDE_SOURCE, concatPieces, debugIdFor, finalizeMap, serverRootOf, type FunctionMap, type MapPiece, type RawMap } from './sourcemap';
 import { REQUIRE_CONTEXT_PREFIX } from './transform-worker';
 
 export { ASSET_EXTS, SOURCE_EXTS } from './shared';
@@ -33,6 +34,15 @@ export interface BundleOptions {
   hostedAssets?: boolean;
   /** iOS: put images into an asset catalog (`--asset-catalog-dest`, like expo export:embed) */
   assetCatalogDest?: string;
+  /**
+   * export:embed with a source map: `//# sourceMappingURL=<url>` + `//# debugId=<id>` annotations, `debugId` in the
+   * map (Expo: the map's base name, or the path with `--sourcemap-use-absolute-path`)
+   */
+  sourceMapUrl?: string;
+  /** `--sourcemap-sources-root`: map sources relative to this directory (Metro relativizeSourceMap) */
+  sourcemapSourcesRoot?: string;
+  /** `--bundle-encoding` (utf8 | utf16le | ascii) */
+  bundleEncoding?: BufferEncoding;
   routerRoot?: string;
   workers?: number;
   resetCache?: boolean;
@@ -45,6 +55,10 @@ export interface BundleResult {
   domComponents: string[];
   assets: AssetData[];
   timings: Record<string, number>;
+  /** the bundle without map annotations */
+  code: string;
+  /** Expo-shaped source map (without `debugId`), when a source map was requested */
+  map: RawMap | null;
 }
 
 const ENTRY_ID = '\0bun-rn:entry';
@@ -70,6 +84,8 @@ export async function bundle(opts: BundleOptions): Promise<BundleResult> {
   const missingExports = new Map<string, Set<string>>();
   // Babel source maps per file: Bun maps the bundle to the Babel output only; composed at the end.
   const babelMaps = new Map<string, any>();
+  // Metro function maps per file -> `x_facebook_sources`
+  const functionMaps = new Map<string, FunctionMap | null>();
   // In-memory transform results, so link retries do not hit the disk cache again.
   const transformed = new Map<string, ReturnType<typeof project.transform>>();
   const transformModule = (file: string) => {
@@ -139,7 +155,8 @@ export async function bundle(opts: BundleOptions): Promise<BundleResult> {
         const ext = path.extname(file).slice(1);
         if (ext === 'json') return { contents: fs.readFileSync(file, 'utf8'), loader: 'json' };
         if (ext === 'css' || ext === 'scss' || ext === 'sass') return { contents: (await transformCss(project, file)).js, loader: 'js' }; // native: Expo's empty CSS module
-        const { code, map, domComponentReference, optionalDeps } = await transformModule(file);
+        const { code, map, domComponentReference, optionalDeps, functionMap } = await transformModule(file);
+        functionMaps.set(file, functionMap ?? null);
         if (optionalDeps?.length) optionalByFile.set(file, new Set(optionalDeps));
         if (domComponentReference) domComponents.add(domComponentReference);
         const stubs = missingExports.get(file);
@@ -151,8 +168,11 @@ export async function bundle(opts: BundleOptions): Promise<BundleResult> {
   };
 
   const tPoly = performance.now();
-  const polyfills = await project.polyfillSources();
-  for (const f of project.polyfillFiles) if (!f.startsWith('\0')) modules.add(f);
+  const polyfills = await project.polyfillPieces();
+  for (const p of polyfills) {
+    if (!p.file.startsWith('\0')) modules.add(p.file);
+    if (p.functionMap) functionMaps.set(p.file, p.functionMap);
+  }
   timings.polyfills = performance.now() - tPoly;
 
   // ---- module graph (retried while Bun reports imports of names a module does not export)
@@ -213,24 +233,39 @@ export async function bundle(opts: BundleOptions): Promise<BundleResult> {
     ? `var $RefreshReg$=function(){},$RefreshSig$=function(){return function(t){return t}};` +
       `var require=globalThis.require||function(id){throw new Error('Cannot require "'+id+'" at runtime in a Bun bundle')};`
     : '';
-  const head = [project.prelude(devPrelude), ...polyfills].join('\n') + '\n';
-  fs.mkdirSync(path.dirname(opts.bundleOutput), { recursive: true });
-  fs.writeFileSync(opts.bundleOutput, head + mainCode + '\n');
-
+  let graphMap: RawMap | null = null;
   if (opts.sourcemapOutput) {
-    const bunMap = strict.map ?? { version: 3, sources: [], names: [], mappings: '' };
     // bundle -> Babel output (Bun) composed with Babel output -> original source (per file). Only Bun's
     // (project-relative) sources get a Babel map; Babel maps point at absolute originals, ending the chain.
     const remapping = projectRequire('@jridgewell/remapping');
-    const map: any = remapping(bunMap, (source: string) => {
+    graphMap = remapping(strict.map ?? { version: 3, sources: [], names: [], mappings: '' }, (source: string) => {
       if (path.isAbsolute(source)) return null;
       return babelMaps.get(path.resolve(projectRoot, source)) ?? null;
     });
-    // Shift the module-graph mappings below the (unmapped) prelude and polyfills.
-    map.mappings = ';'.repeat(head.split('\n').length - 1) + map.mappings;
-    map.sources = map.sources.map((s: string) => (path.isAbsolute(s) ? path.relative(projectRoot, s) : s));
-    fs.writeFileSync(opts.sourcemapOutput, JSON.stringify(map));
   }
+  const pieces: MapPiece[] = [{ code: project.prelude(devPrelude), source: PRELUDE_SOURCE }, ...polyfills, { code: mainCode, map: graphMap }];
+  const joined = concatPieces(pieces, projectRequire);
+  const code = joined.code + '\n';
+  let map: RawMap | null = null;
+  let annotations = '';
+  if (opts.sourcemapOutput) {
+    map = finalizeMap(joined.map, { projectRoot, serverRoot: serverRootOf(projectRoot, projectRequire), projectRequire, functionMaps });
+    let written: RawMap = map;
+    if (opts.sourceMapUrl) {
+      // Expo export:embed: the debug id of the content-hashed name `<entry>-<md5>` (like `expo export`)
+      const debugId = debugIdFor(`${path.basename(entry).replace(/\.\w+$/, '')}-${md5hex(code)}`, projectRequire);
+      written = { ...map, debugId };
+      annotations = `//# sourceMappingURL=${opts.sourceMapUrl}\n//# debugId=${debugId}`;
+    }
+    if (opts.sourcemapSourcesRoot != null) {
+      written = { ...written, sources: [...written.sources] };
+      projectRequire('metro/private/lib/relativizeSourceMap').default(written, opts.sourcemapSourcesRoot);
+    }
+    fs.mkdirSync(path.dirname(opts.sourcemapOutput), { recursive: true });
+    fs.writeFileSync(opts.sourcemapOutput, JSON.stringify(written));
+  }
+  fs.mkdirSync(path.dirname(opts.bundleOutput), { recursive: true });
+  fs.writeFileSync(opts.bundleOutput, code + annotations, opts.bundleEncoding ?? 'utf8');
 
   if (opts.assetsDest) {
     // Expo CLI's own asset persistence (expo export:embed): iOS scale filtering / asset catalog, Android
@@ -244,5 +279,5 @@ export async function bundle(opts: BundleOptions): Promise<BundleResult> {
 
   timings.total = performance.now() - t0;
   timings.cacheHits = project.stats.cacheHits;
-  return { modules: [...modules], assets, timings, domComponents: [...domComponents] };
+  return { modules: [...modules], assets, timings, domComponents: [...domComponents], code, map };
 }

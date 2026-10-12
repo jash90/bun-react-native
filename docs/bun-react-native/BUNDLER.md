@@ -29,7 +29,11 @@ Dzięki temu wynik ma ten sam układ co `expo export` — sprawdzone plik po pli
 | `web-dev.ts` | trasy web dev servera: `single` → szablon Expo; `static`/`server` → handler `expo-server` (adapter Bun) z SSR każdej strony, trasami API i middleware; `public/`, generowany `favicon.ico` | `createRouteHandlerMiddleware`, `getStaticPageAsync` |
 | `web-export.ts` | eksport web: `single`, `static` (prerender każdej trasy, w tym `[param].html`, `generateStaticParams`, warianty grup), `server` (`dist/client` + `dist/server`, `_expo/functions/*.js`, `_expo/routes.json`, tryb SSR `unstable_useServerRendering`) | `exportFromServerAsync` |
 | `export.ts` | `expo export`: natywne bundle → bytecode Hermes `_expo/static/js/<platforma>/entry-<md5>.hbc`, `assets/<md5>`, `metadata.json` (EAS Update), `assetmap.json`; orkiestracja platform | `exportAppAsync` |
-| `cli.ts` | `export:embed` (argumenty `react-native bundle`, w tym `--asset-catalog-dest`), `export` (flagi i domyślne platformy z `resolveOptionsAsync` Expo), `start [--web]` | `@expo/cli` |
+| `cli.ts` | `export:embed`, `export` (flagi i domyślne platformy z `resolveOptionsAsync` Expo, `--clear`), `start [-p port] [--clear] [-i/-a/-w]` | `@expo/cli` |
+| `terminal.ts` | klawisze `bun run start` jak `expo start`: `r` reload, `m` menu dev, `shift+m` inspektor elementów, `j` React Native DevTools (`JsInspector` Expo), `i`/`a` otwarcie zainstalowanego buildu dev (symulator / `adb reverse` + emulator), `w` web, `o` edytor, `c`, `?`, Ctrl+C | `@expo/cli` `start/interface` |
+| `embed.ts` | `export:embed` jak `exportEmbedAsync` Expo: domyślne `--dev true` i wejście z `package.json`, usunięcie starego bundla (i kopii w `.app`), `--bytecode`, `--sourcemap-use-absolute-path`, `--sourcemap-sources-root`, `--bundle-encoding`, `--max-workers`, adnotacje `sourceMappingURL`/`debugId`, błędy w formacie Xcode | `@expo/cli/build/src/export/embed` |
+| `env.ts` | pliki `.env` jak Expo CLI (`.env.<tryb z --dev>`, zmienne z powłoki wygrywają, przeładowanie w dev); automatyczne wczytywanie Buna wyłączone (`bunfig.toml` `env = false`) | `@expo/cli` `utils/nodeEnv`, `@expo/env` |
+| `sourcemap.ts` | mapy w kształcie Expo: prelude/polyfille/graf sklejone z mapowaniami, źródła `/` względem roota serwera, `?ctx=` dla `require.context`, `x_google_ignoreList`, `x_facebook_sources`, `debugId`; mapy dev jak w Metro (ścieżki bezwzględne) | `@expo/metro-config` `serializer/sourceMap`, `metro-source-map` Generator |
 | `plugins/with-bun-bundler.js` | iOS: `CLI_PATH` w `ios/.xcode.env`; Android: `cliFile` w `app/build.gradle` | — |
 
 Cache transformacji: `node_modules/.cache/bun-rn-bundler/<platforma>[-server]-<dev|prod>/<Bun.hash>.json`, klucz =
@@ -107,7 +111,11 @@ z cache po treści — faza bundlowania w buildzie Xcode: **1,04 s**. Dev server
   assety `assets/<ścieżka>/<nazwa>.<md5>@Nx.png`, identyczne obiekty `registerAsset`), `--source-maps inline` (iOS
   z Hermesem: sam `.hbc`; bez bytecode: mapa jako `data:` URL; web: jak Expo — zewnętrzny `.map`) i pełnego eksportu
   projektu. Bundle z `"use strict"`: `hermesc` 0 błędów, aplikacje Release iOS i Android, eksport web w przeglądarce.
-- Testy: `bun run test:tools` — 29 testów (resolver i warstwy Expo, rekordy assetów Metro, szablon `require.context`,
+- **`.env`, `export:embed`, mapy źródeł** (czwarta runda): `EXPO_PUBLIC_*` z `.env.production` w `export:embed --dev
+  false` (bezpośrednio i przez shim) i OTA, z `.env.development` w dev (z przeładowaniem) — jak Metro; `--bytecode` jak
+  Metro; mapy embed/OTA/web z tymi samymi kluczami co Metro (`debugId`, `x_google_ignoreList`, `x_facebook_sources`,
+  prelude/polyfille), bez bezwzględnych ścieżek dysku, te same pozycje źródłowe co Metro; mapy dev jak Metro.
+- Testy: `bun run test:tools` — 36 testów (resolver i warstwy Expo, rekordy assetów Metro, szablon `require.context`,
   kolejność grafu, minifier).
 
 ## Ograniczenia (stan obecny)
@@ -121,7 +129,8 @@ z cache po treści — faza bundlowania w buildzie Xcode: **1,04 s**. Dev server
 | Arkusz atomowych stylów react-native-web w HTML przy loaderach | Expo renderuje strony równolegle przy wspólnym rejestrze stylów; przy loaderach przeplot różni się od Metro, więc lista klas `r-…` w `<style>` strony bywa inna (bez wpływu na działanie, wynik deterministyczny) | — |
 | Brak `inlineRequires`, inlinowania `Platform.OS`, constant folding Metro w produkcji | inny (mniejszy) kod; semantyka bez zmian | — |
 | Importy nazw, których moduł nie eksportuje (typy TS re-eksportowane bez `export type`) | Bun przerywa linkowanie | bundler dopisuje `export var X = void 0` (semantyka Metro: `undefined`) i linkuje ponownie |
-| Prelude i polyfille bez mapowania w sourcemapie | ramki stosu z polyfilli bez źródła | — |
+| Expo Go: serwer nie serwuje manifestu Expo (`/` z `expo-platform`, `ExpoGoManifestHandlerMiddleware`) | Expo Go nie połączy się z `bun run start`; buildy deweloperskie (`expo run:*`, z `expo-dev-client` lub bez) działają | `bun run start:metro` dla Expo Go |
+| `expo run:ios --configuration Release` / `run:android --variant release` najpierw bundlują Metro („eager”, wewnątrz Expo CLI, bez przełącznika) | Metro pracuje na próżno: `export:embed` Buna ignoruje ten wynik (skopiowanie wysłałoby bundle Metro) i bundluje od nowa | build Release przez `xcodebuild` / `./gradlew assembleRelease` (albo EAS Build) |
 | Proces CLI kończy się przez `process.exit` | zakończone `Worker`y / `Bun.build` potrafią trzymać pętlę zdarzeń (bez tego Xcode czekał bez końca) | — |
 
 Zachowania Expo (nie różnice Buna): trasa dynamiczna bez `generateStaticParams` przy `web.output: "static"` jest

@@ -8,15 +8,15 @@
 //   export        - `expo export` on Bun: same flags (--platform/-p ios|android|web|all (repeatable), --output-dir,
 //                   --dev, --no-minify, --no-bytecode, --source-maps, --dump-assetmap, --no-ssg) and output layout
 //                   (EAS Update metadata.json, Hermes bytecode, web single/static/server) - see ./export.ts
-//   start         - development server (Bun.serve) on --port (default 8081), iOS/Android/web;
-//                   --web opens the app in the browser
+//   start         - development server (Bun.serve) on --port/-p (default 8081), iOS/Android/web, with Expo's terminal
+//                   keys (./terminal.ts); --clear, -i/-a/-w open a platform right away
+//   (export:embed lives in ./embed.ts)
 //
 // Escape hatch: RN_BUNDLER=metro runs the same command with Metro (`@expo/cli`).
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 
-import { bundle } from './bundle';
 
 function parseArgs(argv: string[]) {
   const args: Record<string, string> = {};
@@ -27,6 +27,12 @@ function parseArgs(argv: string[]) {
     if ((a === '--platform' || a === '-p') && argv[i + 1] !== undefined) platforms.push(argv[i + 1]);
     if (a === '-p') {
       args.platform = argv[++i];
+      continue;
+    }
+    // `expo start` short flags
+    const short = ({ '-i': 'ios', '-a': 'android', '-w': 'web', '-c': 'clear' } as Record<string, string>)[a];
+    if (short) {
+      args[short] = 'true';
       continue;
     }
     if (a.startsWith('--')) {
@@ -51,42 +57,10 @@ function runMetro(): never {
   process.exit(proc.exitCode ?? 1);
 }
 
-async function runExportEmbed(args: Record<string, string>) {
-  const projectRoot = path.resolve(args['project-root'] ?? process.cwd());
-  const platform = (args.platform ?? 'ios') as 'ios' | 'android' | 'tvos' | 'macos';
-  const dev = args.dev === 'true';
-  // RN's scripts pass --minify false for Hermes release builds; otherwise minify when !dev (Metro default).
-  const minify = args.minify !== undefined ? args.minify === 'true' : !dev;
-  const bundleOutput = path.resolve(args['bundle-output'] ?? `${platform}.bundle.js`);
-  const started = performance.now();
-  const result = await bundle({
-    projectRoot,
-    entryFile: args['entry-file'] ?? 'index.js',
-    platform,
-    dev,
-    minify,
-    bundleOutput,
-    sourcemapOutput: args['sourcemap-output'] ? path.resolve(args['sourcemap-output']) : undefined,
-    assetsDest: args['assets-dest'] ? path.resolve(args['assets-dest']) : undefined,
-    assetCatalogDest: args['asset-catalog-dest'] ? path.resolve(args['asset-catalog-dest']) : undefined,
-    // The transform cache is keyed by file content, so native scripts' --reset-cache is ignored by default.
-    resetCache: args['reset-cache'] === 'true' && process.env.BUN_BUNDLER_HONOR_RESET_CACHE === '1',
-    log: (m) => console.log(m),
-  });
-  // DOM components: www.bundle/<md5>.html + web bundles next to the native assets (Expo exportEmbedAsync)
-  const { persistDomComponentsForEmbed } = await import('./dom');
-  const dom = await persistDomComponentsForEmbed({
-    projectRoot,
-    references: result.domComponents,
-    dev,
-    platform,
-    bundleOutput,
-    assetsDest: args['assets-dest'] ? path.resolve(args['assets-dest']) : undefined,
-  });
-  const ms = Math.round(performance.now() - started);
-  console.log(`${{ ios: 'iOS', android: 'Android', tvos: 'tvOS', macos: 'macOS' }[platform]} Bundled ${ms}ms with Bun (${result.modules.length} files${dom ? `, ${dom} DOM components` : ''})`);
-  console.log(`Writing bundle output to: ${bundleOutput}`);
-  if (process.env.BUN_BUNDLER_TIMINGS) console.log(JSON.stringify(result.timings));
+/** `--clear`: drop the Bun bundler's transform cache (Expo: Metro's cache) */
+function clearCache(projectRoot: string) {
+  fs.rmSync(path.join(projectRoot, 'node_modules', '.cache', 'bun-rn-bundler'), { recursive: true, force: true });
+  console.log('Cleared the Bun bundler cache');
 }
 
 if (process.env.RN_BUNDLER === 'metro') runMetro();
@@ -98,12 +72,16 @@ const command = positional[0] ?? 'export:embed';
 
 try {
   if (command === 'start') {
+    const projectRoot = path.resolve(args['project-root'] ?? process.cwd());
+    if (args.clear === 'true' || args['reset-cache'] === 'true') clearCache(projectRoot);
     const { startDevServer } = await import('./dev-server');
-    const server = await startDevServer({ projectRoot: path.resolve(args['project-root'] ?? process.cwd()), port: Number(args.port ?? 8081) });
-    if (args.web === 'true') {
-      const url = `http://localhost:${server.port}`;
-      Bun.spawn(process.platform === 'darwin' ? ['open', url] : ['xdg-open', url], { stdio: ['ignore', 'ignore', 'ignore'] });
-    }
+    // `-p` is the port for `start` (expo start -p 8082), the platform for `export`
+    const port = Number(args.port ?? (/^\d+$/.test(args.platform ?? '') ? args.platform : 8081));
+    const dev = await startDevServer({ projectRoot, port });
+    // like `expo start`: key presses (r, m, j, i, a, w, o, ?) and -i / -a / -w to open a platform right away
+    const { startTerminalInterface } = await import('./terminal');
+    const ui = startTerminalInterface({ projectRoot, port: dev.port, broadcast: dev.broadcast, close: () => dev.server.stop(true) });
+    for (const [flag, key] of [['ios', 'i'], ['android', 'a'], ['web', 'w']] as const) if (args[flag] === 'true') await ui.press(key);
   } else if (command === 'export') {
     const projectRoot = path.resolve(args['project-root'] ?? process.cwd());
     const req = createRequire(path.join(projectRoot, 'package.json'));
@@ -121,13 +99,15 @@ try {
       '--unstable-hosted-native': flag('unstable-hosted-native'),
       '--source-maps': args['source-maps'] ?? args['dump-sourcemap'],
     });
+    if (args.clear === 'true') clearCache(projectRoot);
     const unsupported = options.platforms.filter((p: string) => !['ios', 'android', 'web', 'tvos', 'macos'].includes(p));
     if (unsupported.length) throw new Error(`export: platform ${unsupported.join(', ')} is not supported by the Bun bundler`);
     const { exportAppAsync } = await import('./export');
     await exportAppAsync({ projectRoot, ...options, log: (m: string) => console.log(m) });
     process.exit(0);
   } else if (command === 'export:embed' || command === 'bundle') {
-    await runExportEmbed(args);
+    const { exportEmbedAsync } = await import('./embed');
+    await exportEmbedAsync(args);
     // Terminated Bun Workers / Bun.build can keep the event loop alive; native build scripts wait for exit.
     process.exit(0);
   } else {

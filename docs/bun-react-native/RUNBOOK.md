@@ -55,7 +55,7 @@ Xcode + CocoaPods (iOS), JDK 17 + Android SDK (Android) — bez zmian względem 
 
 | Plik | Gdzie | Rola |
 |---|---|---|
-| `bunfig.toml` | katalog aplikacji | `preload` dla każdego procesu Buna; w monorepo dodaj `[install] linker = "hoisted"` |
+| `bunfig.toml` | katalog aplikacji | `preload` dla każdego procesu Buna, `env = false`; w monorepo dodaj `[install] linker = "hoisted"` |
 | `tools/bun/node-compat.preload.js` | repo | sortowanie `fs.readdir*` jak w Node |
 | `tools/bun/jest.preload.js` | repo | Jest pod Bunem zachowuje się jak pod Node |
 | `metro.config.js` | katalog aplikacji | pod Bunem `transformer.unstable_workerThreads = false` |
@@ -65,6 +65,8 @@ Xcode + CocoaPods (iOS), JDK 17 + Android SDK (Android) — bez zmian względem 
 `bunfig.toml` (aplikacja):
 ```toml
 preload = ["./tools/bun/node-compat.preload.js", "./tools/bun/jest.preload.js"]
+# .env ładują Expo CLI i bundler dla trybu polecenia; Bun wziąłby .env.development także do release (KNOWN-ISSUES #12)
+env = false
 
 [install]
 linker = "hoisted"
