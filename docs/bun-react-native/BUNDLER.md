@@ -15,14 +15,17 @@ Dzięki temu wynik ma ten sam układ co `expo export` — sprawdzone plik po pli
 | Plik | Odpowiada za | Zastępuje w Metro |
 |---|---|---|
 | `bundle.ts` | `Bun.build` (graf modułów, linkowanie ESM/CJS, IIFE, minifikacja, sourcemapa) + plugin RN, moduły wirtualne, prelude i polyfille jak w Metro, złożenie map Bun→Babel→źródło, kolejność assetów jak graf Metro | `metro` (DeltaBundler, serializer, `metro-runtime` require) |
-| `resolver.ts` | rozwiązywanie modułów 1:1 z Metro + warstwy Expo CLI (tsconfig `paths`, alias vector-icons, wirtualny rejestr assetów, `HMRClient`, aliasy i shimy web, wbudowane moduły Node w przeglądarce) | `metro-resolver`, `@expo/cli` resolver |
-| `transform-worker.ts` | pula `Worker`ów Buna z tą samą transformacją Babel co Expo (`@expo/metro-config` babel-transformer, `caller` jak w Metro), przepisanie `require.context` | `metro-transform-worker` + `jest-worker` |
+| `metro-resolver.ts` | rozwiązywanie Metro: rozszerzenia platform, pola `main`, `exports`/warunki, `node_modules`, `index`, assety (`assetResolutions`) | `metro-resolver` |
+| `resolver.ts` | łańcuch resolverów Expo CLI w tej samej kolejności: mock produkcyjnego Reacta w dev, tsconfig `paths`, moduły Node, aliasy (web, vector-icons), rejestr assetów / async require, autolinking „sticky” (monorepo, tvOS/macOS), przepisania po rozwiązaniu (shimy, `HMRClient`, `@react-navigation/core`, moduły tylko natywne, `InitializeCore` na serwerze), resolver zapasowy przez zależności `expo`/`expo-router`; rozszerzenia tvOS/macOS | `withMetroMultiPlatform`, `createExpoAutolinkingResolver`, `createExpoFallbackResolver` |
+| `transform-worker.ts` | pula `Worker`ów Buna z transformacją Babel Expo (`@expo/metro-config` babel-transformer z opcjami jak w Metro) poprzedzoną krokami transform-workera Expo (pliki `+api`/`+html`/`+middleware` wycinane z klienta, `.env`, `expo/virtual/env`, `expo/virtual/streams`, wejście komponentu DOM); dev: `import()` jako async require Metro (leniwe bundle); zależności opcjonalne (`try`/`.catch`) jak `allowOptionalDependencies`; metadane `loaderReference`/`expoDomComponentReference` | `metro-transform-worker` + `jest-worker` |
 | `assets.ts` | rekord assetu jak `metro/src/Assets.js` (warianty `img@2x.ios.png` zastępują ogólne, kolejność skal jak `readdir` Node, wymiary / skala), `fileHashes` Expo, moduł `registerAsset` | `metro/src/Assets.js` |
 | `shared.ts` | projekt (config Expo przez `@expo/config`, `routerRoot`, `baseUrl`), pula transformacji + cache, prelude/polyfille, moduł `require.context` 1:1 z szablonem Metro, kolejność grafu z `metafile` Buna | `metro-config`, `contextModuleTemplates` |
-| `dev-graph.ts` | graf modułów dev w formacie Metro (`__d(factory, id, deps, name)` + runtime `require` Expo), mapa sekcyjna, aktualizacje HMR | DeltaBundler + `metro-runtime` HMR |
+| `dev-graph.ts` | graf modułów dev w formacie Metro (`__d(factory, id, deps, name)` + runtime `require` Expo), mapa sekcyjna, aktualizacje HMR, leniwe bundle `modulesOnly` dla `import()` (mapa `paths` jak `getModuleParams` Metro) | DeltaBundler + `metro-runtime` HMR, `lazy=true` |
 | `dev-server.ts` | `Bun.serve`: `/status`, bundle, mapa, `/assets` (jak `getAsset` Metro), `/symbolicate`, WS `/message` i `/hot` (protokół HMR Metro → Fast Refresh), `fs.watch` | `metro` Server + `@expo/cli` dev server |
 | `inspector.ts` | proxy inspektora: `/json*`, WS `/inspector/device` i `/inspector/debug` (CDP), `/open-debugger`, front-end React Native DevTools | `@react-native/dev-middleware` |
-| `web.ts` | CSS (CSS Modules / lightningcss przez transformację Expo, dev: `<style>` z HMR, kolejność jak Metro), assety web, `Bun.build` dla web: `client` (przeglądarka), `render` (render.js dla Buna), `function` (CommonJS: trasy API, middleware, moduł SSR) | serializer web Metro |
+| `web.ts` | CSS jak transform-worker Expo (PostCSS z konfiguracji projektu, Sass, CSS Modules, lightningcss z `targets` z browserslist, lokalne i zewnętrzne `@import`; dev: `<style>` z HMR; natywnie: `{ unstable_styles: {} }`), assety web, `Bun.build` dla web: `client` (przeglądarka; z `asyncRoutes` dzielony na chunki ES), `render` (render.js dla Buna), `function` (CommonJS: trasy API, middleware, loadery, moduł SSR) | serializer web Metro |
+| `loaders.ts` | loadery expo-router (`unstable_useServerDataLoaders`): bundle loadera (`isLoaderBundle`) wykonywany przy eksporcie, w dev i w SSR; `_expo/loaders/*` | `executeServerDataLoaderAsync`, `exportLoadersAsync` |
+| `dom.ts` | komponenty DOM (`"use dom"`): strona `/_expo/@dom/…` i osobny graf dev (z HMR), `www.bundle/` w `export:embed`, nazwy md5 + wpisy `metadata.json` w eksporcie OTA | `DomComponentsMiddleware`, `exportDomComponentAsync` |
 | `web-dev.ts` | trasy web dev servera: `single` → szablon Expo; `static`/`server` → handler `expo-server` (adapter Bun) z SSR każdej strony, trasami API i middleware; `public/`, generowany `favicon.ico` | `createRouteHandlerMiddleware`, `getStaticPageAsync` |
 | `web-export.ts` | eksport web: `single`, `static` (prerender każdej trasy, w tym `[param].html`, `generateStaticParams`, warianty grup), `server` (`dist/client` + `dist/server`, `_expo/functions/*.js`, `_expo/routes.json`, tryb SSR `unstable_useServerRendering`) | `exportFromServerAsync` |
 | `export.ts` | `expo export`: natywne bundle → bytecode Hermes `_expo/static/js/<platforma>/entry-<md5>.hbc`, `assets/<md5>`, `metadata.json` (EAS Update), `assetmap.json`; orkiestracja platform | `exportAppAsync` |
@@ -91,24 +94,35 @@ z cache po treści — faza bundlowania w buildzie Xcode: **1,04 s**. Dev server
   `EXPO_WEB_DEV_HYDRATE=1` hydratuje bez rozbieżności, Fast Refresh na stronie SSR.
 - **Urządzenia (dev)**: iOS i Android — Fast Refresh z zachowaniem stanu (rozwinięta sekcja przetrwała edycję),
   `Runtime.evaluate` przez proxy inspektora (Hermes, Fabric), symbolikacja.
-- Testy: `bun run test:tools` — 24 testy (resolver, rekordy assetów Metro, szablon `require.context`, kolejność grafu,
-  minifier).
+- **Funkcje dodane w drugiej rundzie** (fikstura `/tmp/bunpoc/wt-web`, porównanie z `expo export`/`export:embed` Metro):
+  Sass + PostCSS + zewnętrzny `@import` (identyczne pliki CSS i HTML), loadery (`static`: dane i HTML poza arkuszem RNW
+  identyczne; `server` + SSR: identyczny `routes.json` i odpowiedzi `expo-server`, dev SSR ze strumieniem), `asyncRoutes`
+  (dev: trasy jako leniwe bundle na web i iOS, Fast Refresh w leniwym module; eksport: chunki + `modulepreload`,
+  hydratacja i nawigacja w przeglądarce), komponent DOM (dev z HMR w WebView na iOS, `www.bundle` identyczny z Metro i
+  działający w aplikacji Release, OTA: bytecode wskazuje HTML po md5), zależności opcjonalne (`react-native-webview`).
+- **Release po zmianach**: pełny build Xcode (bundle Bun 12,6 s w fazie Xcode, bytecode Hermes, warianty
+  `back-icon@2x/@3x.ios`) uruchomiony na symulatorze; Gradle `createBundleReleaseJsAndAssets` przez Buna.
+- Testy: `bun run test:tools` — 28 testów (resolver i warstwy Expo, rekordy assetów Metro, szablon `require.context`,
+  kolejność grafu, minifier).
 
 ## Ograniczenia (stan obecny)
 
 | Ograniczenie | Skutek | Obejście |
 |---|---|---|
-| Brak dzielenia bundla (`asyncRoutes`, `import()` → jeden bundle) | trasy ładowane od razu (jak `asyncRoutes: false`, domyślne) | `RN_BUNDLER=metro` gdy potrzebne chunki |
-| `unstable_useServerDataLoaders` (loadery expo-router), React Server Components (`experiments.reactServer*`) | `export` kończy się czytelnym błędem | `bun run export:metro` |
-| Komponenty DOM (`"use dom"`) | nieobsługiwane (brak eksportu `www.bundle`; niesprawdzane) | Metro |
-| Sass / SCSS | błąd transformacji | CSS / CSS Modules |
-| Platformy `tvos`/`macos`, `--unstable-hosted-native`, mapy `inline` | nieobsługiwane | Metro |
-| Brak `inlineRequires`, inlinowania `Platform.OS`, constant folding Metro | inny (mniejszy) kod; semantyka bez zmian | — |
+| React Server Components / server functions (`experiments.reactServerComponentRoutes`, `reactServerFunctions`, beta w Expo) | `export` kończy się czytelnym błędem; wymagają `react-server-dom-webpack` (nie ma go w projekcie) | `bun run export:metro`, `bun run start:metro` |
+| `--unstable-hosted-native`, mapy `inline` (`--source-maps inline`) | nieobsługiwane | Metro |
+| tvOS/macOS: rozwiązywanie, rozszerzenia, autolinking i pakiet hosta są przeniesione z Expo, ale bez `react-native-tvos`/`react-native-macos` w projekcie niesprawdzone na urządzeniu | — | — |
+| Z `asyncRoutes` eksport web ładuje wejście jako `<script type="module">` (chunki ES Buna), Metro — klasyczne skrypty | te same trasy i pliki statyczne, inne nazwy chunków JS; z `unstable_useServerRendering` bez dzielenia (lista skryptów expo-server to klasyczne skrypty) | — |
+| Arkusz atomowych stylów react-native-web w HTML przy loaderach | Expo renderuje strony równolegle przy wspólnym rejestrze stylów; przy loaderach przeplot różni się od Metro, więc lista klas `r-…` w `<style>` strony bywa inna (bez wpływu na działanie, wynik deterministyczny) | — |
+| Brak `inlineRequires`, inlinowania `Platform.OS`, constant folding Metro w produkcji | inny (mniejszy) kod; semantyka bez zmian | — |
 | Importy nazw, których moduł nie eksportuje (typy TS re-eksportowane bez `export type`) | Bun przerywa linkowanie | bundler dopisuje `export var X = void 0` (semantyka Metro: `undefined`) i linkuje ponownie |
 | Prelude i polyfille bez mapowania w sourcemapie | ramki stosu z polyfilli bez źródła | — |
-| „Sticky” rozwiązywanie autolinkingu Expo nie jest zaimplementowane | bez znaczenia przy linkerze `hoisted` (jedna kopia pakietu) | `linker = "hoisted"` |
 | Proces CLI kończy się przez `process.exit` | zakończone `Worker`y / `Bun.build` potrafią trzymać pętlę zdarzeń (bez tego Xcode czekał bez końca) | — |
 
-Zachowania Expo (nie różnice Buna): trasa dynamiczna bez `generateStaticParams` jest prerenderowana jako `[id].html`
-z dosłownym `[id]`, więc przy wejściu na `/users/42` React zgłasza rozbieżność hydratacji (#418) — identycznie w
-eksporcie Metro. Dev SSR nie hydratuje bez `EXPO_WEB_DEV_HYDRATE=1` (jak `expo start`).
+Zachowania Expo (nie różnice Buna): trasa dynamiczna bez `generateStaticParams` przy `web.output: "static"` jest
+prerenderowana jako `[id].html` z dosłownym `[id]`; serwowana dla `/users/42` daje rozbieżność hydratacji React #418 —
+identycznie w eksporcie Metro, zgodnie z dokumentacją Expo („dynamic routes will not work out of the box”). `bun run
+export` wypisuje wtedy ostrzeżenie z listą takich plików; rozwiązania: `generateStaticParams` albo `web.output: "server"`
+z `unstable_useServerRendering` (sprawdzone: `/users/42` hydratuje się bez błędu). Dev SSR nie hydratuje bez
+`EXPO_WEB_DEV_HYDRATE=1` (jak `expo start`); przy `server` + `unstable_useServerRendering` dev renderuje strumieniowo
+(`getStreamingContent`) z danymi loaderów, jak Expo.

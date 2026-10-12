@@ -55,7 +55,7 @@ bun run prebuild     # expo prebuild --clean (ios/ and android/ are generated, n
 | `tools/bun/metro-minifier.js` | Metro minifier on Bun's native minifier (`Bun.build`), with terser fallback; tests: `bun run test:tools` |
 | `plugins/with-bun-xcode-env.js` | config plugin: `ios/.xcode.env` → `NODE_BINARY=$(command -v bun)` |
 | `eas.json`, `eas-build-*` scripts | Bun version for EAS Build and the shim on the EAS worker PATH (unverified on EAS) |
-| `tools/bun-bundler/` | Bun bundler replacing Metro: resolver, Babel worker pool, assets, dev server (native + web SSR), exports, CLI (`docs/bun-react-native/BUNDLER.md`) |
+| `tools/bun-bundler/` | Bun bundler replacing Metro: Expo/Metro resolver chain, Babel worker pool, CSS (PostCSS/Sass), assets, dev server (native + web SSR, lazy bundles, DOM components), exports incl. loaders, CLI (`docs/bun-react-native/BUNDLER.md`) |
 | `plugins/with-bun-bundler.js` | config plugin: Xcode `CLI_PATH` / Gradle `cliFile` → Bun bundler (`RN_BUNDLER=metro` to fall back) |
 | `.github/workflows/mobile-bun.yml` | CI: checks, Android and iOS release builds, Node-vs-Bun bundle determinism |
 

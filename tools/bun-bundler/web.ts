@@ -14,7 +14,7 @@ import type { BunPlugin } from 'bun';
 
 import { getAssetData, type AssetData } from './assets';
 import { ASSET_REGISTRY_VIRTUAL } from './resolver';
-import { ASSET_REGISTRY_SRC, metafileOrder, requireContextSource, type Project } from './shared';
+import { ASSET_REGISTRY_SRC, MISSING_MODULE_NAMESPACE, metafileOrder, missingModuleSource, requireContextSource, type Project } from './shared';
 import { REQUIRE_CONTEXT_PREFIX } from './transform-worker';
 
 export const md5 = (data: string | Uint8Array) => new Bun.CryptoHasher('md5').update(data).digest('hex');
@@ -23,29 +23,61 @@ const NODE_BUILTINS = new Set([...builtinModules, ...builtinModules.map((m) => `
 // ---------------------------------------------------------------- CSS
 
 export interface CssResult {
-  js: string; // module code: class map for CSS modules; dev client: + `<style>` injection with HMR
-  css: string; // stylesheet text (minified unless dev)
+  /** module code: CSS Modules class map (+ dev `<style>` injection); global CSS: dev injection or '' */
+  js: string;
+  /** stylesheet text (static extraction for exports and dev SSR) */
+  css: string;
+  /** local `@import`s: specifiers of other stylesheets (graph dependencies, like Metro's) */
+  imports: string[];
+  /** `@import url(https://...)`: rendered as `<link>` tags by Expo's HTML serializer */
+  externalImports: { url: string; media?: string; supports?: string }[];
 }
 
-export async function transformCss(project: Project, file: string, mode: { dev: boolean; server: boolean }): Promise<CssResult> {
-  const src = fs.readFileSync(file, 'utf8');
-  const filename = path.relative(project.projectRoot, file);
-  const cssModules = project.projectRequire('@expo/metro-config/build/transform-worker/css-modules');
-  const cssDev = project.projectRequire('@expo/metro-config/build/transform-worker/css');
-  if (/\.module\.css$/.test(file)) {
+/**
+ * @expo/metro-config transform-worker `transformCss`, step by step: native platforms get an empty module
+ * (CSS Modules: `{ unstable_styles: {} }`); web runs PostCSS (project config), Sass (`sass` package), then CSS
+ * Modules (Expo's lightningcss transform) or global CSS (lightningcss with browserslist targets and `@import`
+ * analysis). Development modules inject `<style data-expo-css-hmr>` (guarded for server bundles).
+ */
+export async function transformCss(project: Project, file: string): Promise<CssResult> {
+  const mc = (m: string) => project.projectRequire(`@expo/metro-config/build/transform-worker/${m}`);
+  const cssModules = mc('css-modules');
+  const filename = path.relative(project.projectRoot, file).split(path.sep).join('/');
+  if (!project.isWeb) {
+    return { js: cssModules.matchCssModule(filename) ? 'module.exports={ unstable_styles: {} };' : '', css: '', imports: [], externalImports: [] };
+  }
+  const { projectRoot, dev, minify } = project;
+  let code = fs.readFileSync(file, 'utf8');
+  const postcss = await mc('postcss').transformPostCssModule(projectRoot, { src: code, filename });
+  if (postcss.hasPostcss) code = postcss.src;
+  const sass = mc('sass');
+  const syntax = sass.matchSass(filename);
+  if (syntax) code = sass.compileSass(projectRoot, { filename, src: code }, { syntax }).src;
+  if (cssModules.matchCssModule(filename)) {
     const r = await cssModules.transformCssModuleWeb({
       filename,
-      src,
-      options: { projectRoot: project.projectRoot, minify: !mode.dev, dev: mode.dev && !mode.server, sourceMap: false, reactServer: false },
+      src: code,
+      options: { reactServer: false, projectRoot, dev, minify, sourceMap: false },
     });
-    return { js: r.output, css: r.css };
+    return { js: r.output, css: r.css, imports: r.dependencies.map((d: any) => d.name), externalImports: r.externalImports };
   }
-  // global stylesheet
   const { transform } = project.projectRequire('lightningcss');
-  const out = transform({ filename, code: Buffer.from(src), minify: !mode.dev, errorRecovery: true, include: 1 });
-  const css = out.code.toString();
-  if (mode.dev && !mode.server) return { js: cssDev.wrapDevelopmentCSS({ filename, src: css, reactServer: false }), css };
-  return { js: '', css };
+  const out = transform({
+    filename,
+    code: Buffer.from(code),
+    errorRecovery: true,
+    sourceMap: false,
+    cssModules: false,
+    projectRoot,
+    minify,
+    analyzeDependencies: true,
+    targets: await mc('browserslist').getBrowserslistTargets(projectRoot),
+    include: 1, // nesting
+  });
+  cssModules.printCssWarnings(filename, code, out.warnings);
+  const imports = cssModules.collectCssImports(filename, code, out.code.toString(), out);
+  const js = dev ? mc('css').wrapDevelopmentCSS({ src: imports.code, filename, reactServer: false }) : '';
+  return { js, css: imports.code, imports: imports.dependencies.map((d: any) => d.name), externalImports: imports.externalImports };
 }
 
 /** `data-expo-css-hmr` id of a stylesheet (Expo's pathToHtmlSafeName of the project-relative path). */
@@ -82,7 +114,7 @@ export function webAssetFiles(assets: WebAsset[]): Map<string, string> {
     data.files.forEach((src, i) => {
       const scale = data.scales[i];
       const suffix = scale === 1 ? '' : `@${scale}x`;
-      const dir = data.httpServerLocation.replace(/^\//, '').replace(/\.\.\//g, '_');
+      const dir = data.httpServerLocation.replace(/^\.?\//, '').replace(/\.\.\//g, '_');
       out.set(`${dir}/${name}${suffix}.${data.type}`, src);
     });
   }
@@ -97,6 +129,11 @@ export interface WebBuildOptions {
   kind: WebBuildKind;
   minify: boolean;
   sourcemap?: boolean;
+  /**
+   * client only: split `import()`ed modules (expo-router `asyncRoutes`) into ES module chunks served from
+   * `${baseUrl}/_expo/static/js/web/` (Bun.build `splitting`, format esm)
+   */
+  splitting?: boolean;
   /** URL prefix of exported assets (`experiments.baseUrl`); assets are served from `${baseUrl}/assets/...` */
   baseUrl?: string;
 }
@@ -105,23 +142,32 @@ export interface WebBuildResult {
   code: string;
   map: any | null; // bundle -> original sources (composed with the Babel maps)
   /** stylesheets in Metro's order (post-order walk of the import graph from the entry) */
-  css: { originFilename: string; css: string }[];
+  css: { originFilename: string; css: string; externalImports: CssResult['externalImports'] }[];
   assets: WebAsset[];
   modules: string[];
+  /** files exporting an expo-router `loader` (Metro artifact metadata `loaderReferences`) */
+  loaderFiles: string[];
+  /** split chunks: file name (in _expo/static/js/web/), code, and the source files each contains / imports */
+  chunks: { name: string; code: string; inputs: string[]; imports: string[] }[];
 }
 
 export async function buildWeb(project: Project, entries: string[], opts: WebBuildOptions): Promise<WebBuildResult> {
   const { resolver, projectRoot, projectPkg, dev } = project;
   const server = opts.kind !== 'client';
+  const split = opts.kind === 'client' && !!opts.splitting;
   if (server !== project.isServer) throw new Error(`buildWeb(${opts.kind}) needs a ${server ? 'server' : 'client'} project`);
-  const ENTRY = '\0bun-rn:web-entry';
-  const cssByFile = new Map<string, string>();
+  // virtual entry (namespace rn-virtual); a plain name, as split chunks are named after it
+  const ENTRY = '/expo-web-entry';
+  const cssByFile = new Map<string, CssResult>();
   const assetByPath = new Map<string, WebAsset>();
   const assetFiles = new Map<string, string[]>();
   const missingExports = new Map<string, Set<string>>();
   const babelMaps = new Map<string, any>();
   const modules = new Set<string>();
-  const publicPath = `${opts.baseUrl ?? ''}/assets`;
+  const loaderFiles = new Set<string>();
+  const optionalByFile = new Map<string, Set<string>>();
+  // DOM component exports use the relative base './' (Expo: `baseUrl: './'`)
+  const publicPath = opts.baseUrl === './' ? './assets' : `${opts.baseUrl ?? ''}/assets`;
 
   const plugin: BunPlugin = {
     name: 'react-native-web',
@@ -135,7 +181,14 @@ export async function buildWeb(project: Project, entries: string[], opts: WebBui
           return { path: REQUIRE_CONTEXT_PREFIX + JSON.stringify(spec), namespace: 'rn-context' };
         }
         const importer = args.importer && args.namespace === 'file' ? args.importer : projectPkg;
-        const r = resolver.resolve(args.path, importer, args.kind === 'import-statement' || args.kind === 'dynamic-import');
+        let r;
+        try {
+          r = resolver.resolve(args.path, importer, args.kind === 'import-statement' || args.kind === 'dynamic-import');
+        } catch (e) {
+          // Metro allowOptionalDependencies: unresolved requires inside try blocks throw only when they run
+          if (!optionalByFile.get(importer)?.has(args.path)) throw e;
+          return { path: args.path, namespace: MISSING_MODULE_NAMESPACE };
+        }
         if (r.type === 'empty') return { path: `empty:${args.path}`, namespace: 'rn-empty' };
         if (r.type === 'assetFiles') {
           assetFiles.set(r.filePaths[0], r.filePaths);
@@ -148,6 +201,7 @@ export async function buildWeb(project: Project, entries: string[], opts: WebBui
         if (args.path === ENTRY) return { contents: entries.map((f) => `import ${JSON.stringify(f)};`).join('\n'), loader: 'js' };
         return { contents: ASSET_REGISTRY_SRC, loader: 'js' };
       });
+      build.onLoad({ filter: /.*/, namespace: MISSING_MODULE_NAMESPACE }, (args) => ({ contents: missingModuleSource(args.path), loader: 'js' }));
       build.onLoad({ filter: /.*/, namespace: 'rn-empty' }, () => ({ contents: 'module.exports = {};', loader: 'js' })); // CommonJS like Metro's empty module: named imports are undefined
       build.onLoad({ filter: /.*/, namespace: 'rn-asset' }, (args) => {
         const data = getAssetData(assetFiles.get(args.path)!, projectRoot, publicPath, 'web');
@@ -165,14 +219,16 @@ export async function buildWeb(project: Project, entries: string[], opts: WebBui
         modules.add(file);
         const ext = path.extname(file).slice(1);
         if (ext === 'json') return { contents: fs.readFileSync(file, 'utf8'), loader: 'json' };
-        if (ext === 'css') {
-          const r = await transformCss(project, file, { dev, server });
-          cssByFile.set(file, r.css);
-          return { contents: r.js, loader: 'js' };
+        if (ext === 'css' || ext === 'scss' || ext === 'sass') {
+          const r = await transformCss(project, file);
+          cssByFile.set(file, r);
+          // `@import`ed stylesheets are graph dependencies (Metro adds them to the module's dependencies)
+          return { contents: r.imports.map((i) => `require(${JSON.stringify(i)});\n`).join('') + r.js, loader: 'js' };
         }
-        if (ext === 'scss' || ext === 'sass') throw new Error(`${file}: Sass is not supported by the Bun bundler`);
         const res = await project.transform(file, 'module', 'esm');
         if (res.map) babelMaps.set(file, res.map);
+        if (res.loaderReference) loaderFiles.add(file);
+        if (res.optionalDeps?.length) optionalByFile.set(file, new Set(res.optionalDeps));
         const stubs = missingExports.get(file);
         const stubCode = stubs ? '\n' + [...stubs].map((n) => `export var ${n} = void 0;`).join('\n') : '';
         return { contents: (res.code ?? '') + stubCode, loader: 'js' };
@@ -187,7 +243,10 @@ export async function buildWeb(project: Project, entries: string[], opts: WebBui
       entrypoints: server ? entries : [ENTRY],
       plugins: [plugin],
       target: opts.kind === 'client' ? 'browser' : opts.kind === 'render' ? 'bun' : 'node',
-      format: opts.kind === 'client' ? 'iife' : opts.kind === 'render' ? 'esm' : 'cjs',
+      format: opts.kind === 'client' ? (split ? 'esm' : 'iife') : opts.kind === 'render' ? 'esm' : 'cjs',
+      ...(split
+        ? { splitting: true, naming: { entry: '[name].[ext]', chunk: '[name]-[hash].[ext]' }, publicPath: `${opts.baseUrl ?? ''}/_expo/static/js/web/` }
+        : {}),
       minify: opts.minify,
       sourcemap: opts.sourcemap ? 'external' : 'none',
       metafile: true,
@@ -225,11 +284,23 @@ export async function buildWeb(project: Project, entries: string[], opts: WebBui
   // stylesheets in Metro's order (@expo/metro-config getCssSerialAssets): post-order walk from the entry
   const css = metafileOrder(result.metafile, entries[entries.length - 1]).post.filter((f) => cssByFile.has(f)).map((file) => ({
     originFilename: path.relative(projectRoot, file).split(path.sep).join('/'),
-    css: cssByFile.get(file)!,
+    css: cssByFile.get(file)!.css,
+    externalImports: cssByFile.get(file)!.externalImports,
   }));
   const { pre } = metafileOrder(result.metafile, server ? entries[0] : ENTRY);
   const assets = pre.filter((p) => assetByPath.has(p)).map((p) => assetByPath.get(p)!);
-  return { code, map, css, assets, modules: [...modules] };
+  const chunks: WebBuildResult['chunks'] = [];
+  for (const out of result.outputs.filter((o: any) => o.kind === 'chunk')) {
+    const name = path.basename(out.path);
+    const meta = Object.entries<any>(result.metafile?.outputs ?? {}).find(([k]) => path.basename(k) === name)?.[1];
+    chunks.push({
+      name,
+      code: (await out.text()).replace(/\n?\/\/# (sourceMappingURL|debugId)=.*$/gm, ''),
+      inputs: Object.keys(meta?.inputs ?? {}).map((k) => path.resolve(k.replace(/^[a-z][a-z-]*:(?=\/)/, ''))),
+      imports: (meta?.imports ?? []).map((i: any) => path.basename(i.path)),
+    });
+  }
+  return { code, map, css, assets, modules: [...modules], chunks, loaderFiles: [...loaderFiles] };
 }
 
 /** Compose Bun's map (bundle -> Babel output) with the per-file Babel maps (Babel output -> source). */

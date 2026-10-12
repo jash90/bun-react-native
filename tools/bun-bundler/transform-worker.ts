@@ -4,6 +4,7 @@
 // with `expo/internal/babel-preset` and the same `caller`), keeps ES module syntax
 // (`experimentalImportSupport: true` => `supportsStaticESM`), rewrites Metro's `require.context(...)`
 // into an import of a virtual module the bundler generates, and returns code + source map.
+import path from 'node:path';
 import { createRequire } from 'node:module';
 
 declare const self: Worker;
@@ -15,6 +16,8 @@ export interface TransformRequest {
   projectRoot: string;
   platform: string;
   dev: boolean;
+  /** export minification (Expo strips server-only files to '' instead of a notice when minifying) */
+  minify?: boolean;
   type: 'module' | 'script';
   /** 'esm' (default): ES modules for Bun.build; 'metro': CommonJS module body for the Metro-format dev runtime. */
   format?: 'esm' | 'metro';
@@ -29,12 +32,22 @@ export interface TransformResponse {
   deps?: string[];
   /** format 'metro': specifiers that came from ES `import`/`export from`/`import()` (resolver condition `import`) */
   esmDeps?: string[];
+  /** format 'metro': indices into `deps` loaded with `import()` (lazy bundles in development, like Metro) */
+  asyncDeps?: number[];
+  /** the module exports an expo-router `loader` (babel-preset-expo server-data-loaders metadata) */
+  loaderReference?: boolean;
+  /** file URL of a `"use dom"` component (native proxy; the DOM bundle is exported separately) */
+  domComponentReference?: string;
+  /** specifiers only required inside try blocks / `import()` with a rejection handler (Metro optional deps) */
+  optionalDeps?: string[];
   error?: string;
 }
 
 export const REQUIRE_CONTEXT_PREFIX = '\0require-context:';
 
 let babel: {
+  babelRuntimeVersion: string | undefined;
+  parseEnvFile: (src: string, isClient: boolean) => Record<string, string>;
   transformer: any;
   generate: any;
   traverse: any;
@@ -46,7 +59,13 @@ let babel: {
 function load(projectRoot: string) {
   if (babel) return babel;
   const req = createRequire(projectRoot + '/package.json');
+  let babelRuntimeVersion: string | undefined;
+  try {
+    babelRuntimeVersion = req('@babel/runtime/package.json').version;
+  } catch {}
   babel = {
+    babelRuntimeVersion,
+    parseEnvFile: req('@expo/metro-config/build/transform-worker/dot-env-development').parseEnvFile,
     transformer: req('@expo/metro-config/build/babel-transformer'),
     generate: req('@babel/generator').default,
     traverse: req('@babel/traverse').default,
@@ -81,15 +100,88 @@ function rewriteRequireContext(ast: any, b: NonNullable<typeof babel>) {
   });
 }
 
+// ---- metro collectDependencies isOptionalDependency (allowOptionalDependencies: true in Expo's Metro config)
+const isNonNullishCallbackArg = (n: any) => n != null && n.type !== 'NullLiteral' && !(n.type === 'Identifier' && n.name === 'undefined');
+
+function isInPromiseChainWithRejectionHandler(path: any): boolean {
+  let current = path;
+  while (current.parentPath != null) {
+    const member = current.parentPath;
+    if (member.node.type !== 'MemberExpression' || member.node.object !== current.node || member.node.computed || member.node.property.type !== 'Identifier' || member.parentPath == null) return false;
+    const call = member.parentPath;
+    if (call.node.type !== 'CallExpression' || call.node.callee !== member.node) return false;
+    const name = member.node.property.name;
+    const args = call.node.arguments;
+    if (name === 'catch' && args.length >= 1 && isNonNullishCallbackArg(args[0])) return true;
+    if (name === 'then' && args.length >= 2 && isNonNullishCallbackArg(args[1])) return true;
+    current = call;
+  }
+  return false;
+}
+
+/** a dependency is optional inside a single-level try block, or an import() with a rejection handler */
+function isOptionalDependency(path: any): boolean {
+  if (isInPromiseChainWithRejectionHandler(path)) return true;
+  let count = 0;
+  let p = path;
+  while (p && count < 3) {
+    if (p.isStatement()) {
+      if (p.node.type === 'BlockStatement') return p.parentPath != null && p.parentPath.node.type === 'TryStatement' && p.key === 'block';
+      count += 1;
+    }
+    p = p.parentPath;
+  }
+  return false;
+}
+
+/** specifiers whose every require/import() is optional */
+function optionalSpecifiers(ast: any, b: NonNullable<typeof babel>, requireNames: string[]): string[] {
+  const optional = new Set<string>();
+  const required = new Set<string>();
+  b.traverse(ast, {
+    CallExpression(p: any) {
+      const { callee, arguments: args } = p.node;
+      const isRequire = b.t.isIdentifier(callee) && requireNames.includes(callee.name) && !p.scope.hasBinding(callee.name);
+      if (!(isRequire || b.t.isImport(callee)) || !b.t.isStringLiteral(args[0])) return;
+      (isOptionalDependency(p) ? optional : required).add(args[0].value);
+    },
+  });
+  return [...optional].filter((s) => !required.has(s));
+}
+
+/** Placeholder for `import("x")` between the CommonJS pass and dependency collection (format 'metro'). */
+const ASYNC_IMPORT = '__bunRnAsyncImport';
+/** Expo's `transformer.asyncRequireModulePath` (@expo/metro-config) */
+const ASYNC_REQUIRE_MODULE = 'expo/internal/async-require-module';
+
 /**
  * Babel plugin: `require("x")` -> `require(_dependencyMap[i], "x")` (Metro module runtime) and collect the
- * specifiers. Runs after ESM -> CommonJS, so imports, re-exports and `import()` are all `require` calls.
+ * specifiers. Runs after ESM -> CommonJS, so imports and re-exports are `require` calls. `import("x")` (kept as a
+ * placeholder through the CommonJS pass) becomes Metro's async require:
+ * `require(_dependencyMap[a], "expo/internal/async-require-module")(_dependencyMap[i], _dependencyMap.paths, "x")`.
  */
-function collectDependencies(deps: string[]) {
+function collectDependencies(deps: string[], asyncDeps: number[]) {
   return ({ types: t }: any) => ({
     visitor: {
       CallExpression(p: any) {
         const { callee, arguments: args } = p.node;
+        if (t.isIdentifier(callee, { name: ASYNC_IMPORT }) && t.isStringLiteral(args[0])) {
+          const spec = args[0].value;
+          const i = deps.push(spec) - 1;
+          asyncDeps.push(i);
+          let a = deps.indexOf(ASYNC_REQUIRE_MODULE);
+          if (a === -1) a = deps.push(ASYNC_REQUIRE_MODULE) - 1;
+          const dep = (n: number) => t.memberExpression(t.identifier('_dependencyMap'), t.numericLiteral(n), true);
+          p.replaceWith(
+            t.callExpression(t.callExpression(t.identifier('require'), [dep(a), t.stringLiteral(ASYNC_REQUIRE_MODULE)]), [
+              dep(i),
+              t.memberExpression(t.identifier('_dependencyMap'), t.identifier('paths')),
+              t.stringLiteral(spec),
+            ])
+          );
+          p.skip();
+          return;
+        }
         if (!t.isIdentifier(callee, { name: 'require' }) || p.scope.hasBinding('require')) return;
         if (args.length < 1 || !t.isStringLiteral(args[0])) return;
         if (t.isMemberExpression(args[0])) return;
@@ -106,26 +198,76 @@ function collectDependencies(deps: string[]) {
   });
 }
 
+/**
+ * The source rewrites @expo/metro-config's transform-worker applies before Babel (transform-worker.js `transform`):
+ * DOM component entry, server-only files stripped from client bundles, `.env` files, the `expo/virtual/env` and
+ * `expo/virtual/streams` modules. Returns the source to transform.
+ */
+function expoPreTransform(req: TransformRequest, b: NonNullable<typeof babel>): string {
+  const posix = req.filename.split('\\').join('/');
+  const rel = posix.startsWith(req.projectRoot + '/') ? posix.slice(req.projectRoot.length + 1) : posix;
+  const opts = req.customTransformOptions;
+  const environment = opts.environment;
+  const isClient = environment !== 'node' && environment !== 'react-server';
+  if (typeof opts.dom === 'string' && posix.match(/expo\/dom\/entry\.js/)) {
+    return `require('expo/dom/internal').registerDOMComponent(require(${JSON.stringify(decodeURI(opts.dom))}).default);`;
+  }
+  if (
+    isClient &&
+    (rel.match(new RegExp(`^app/\\+html(\\.${req.platform})?\\.([tj]sx?|[cm]js)?$`)) ||
+      rel.match(/\+api(\.(native|ios|android|web))?\.[tj]sx?$/) ||
+      rel.match(/\+middleware\.[tj]sx?$/))
+  ) {
+    return req.minify ? '' : '"> The server-only file was removed from the client JS bundle by Expo CLI."';
+  }
+  if (rel.match(/(^|\/)\.env(\.(local|(development|production)(\.local)?))?$/)) {
+    return `export default ${JSON.stringify(b.parseEnvFile(req.src, isClient))};`;
+  }
+  if (!isClient && posix.match(/\/expo\/virtual\/streams\.js$/)) return '';
+  if (isClient && posix.match(/\/expo\/virtual\/env\.js$/)) {
+    if (req.dev) {
+      const relativePath = path.relative(path.dirname(req.filename), req.projectRoot).split(path.sep).join('/');
+      return `const dotEnvModules = require.context(${JSON.stringify(relativePath)},false,/^\\.\\/\\.env/);
+
+    export const env = !dotEnvModules.keys().length ? process.env : { ...process.env, ...['.env', '.env.development', '.env.local', '.env.development.local'].reduce((acc, file) => {
+      return { ...acc, ...(dotEnvModules(file)?.default ?? {}) };
+    }, {}) };`;
+    }
+    return `
+        export const env = new Proxy({}, {
+          get(target, key) {
+            throw new Error(\`Attempting to access internal environment variable "\${key}" is not supported in production bundles. Environment variables should be inlined in production by Babel.\`);
+          },
+       });`;
+  }
+  return req.src;
+}
+
 function transform(req: TransformRequest): TransformResponse {
   const b = load(req.projectRoot);
+  // the options Metro passes to @expo/metro-config's babel-transformer (getTransformOptions of Expo's Metro config)
   const options = {
     dev: req.dev,
-    hot: false,
-    minify: false,
+    hot: req.dev,
+    minify: !!req.minify,
     platform: req.platform,
     projectRoot: req.projectRoot,
     publicPath: '/assets',
     type: req.type,
     experimentalImportSupport: true,
     inlineRequires: false,
-    unstable_transformProfile: 'hermes-stable',
-    enableBabelRCLookup: true,
+    unstable_transformProfile: req.platform === 'web' ? 'default' : 'hermes-stable',
+    enableBabelRCLookup: undefined,
+    enableBabelRuntime: b.babelRuntimeVersion,
     globalPrefix: '',
     customTransformOptions: req.customTransformOptions,
   };
-  const { ast } = b.transformer.transform({ filename: req.filename, src: req.src, options, plugins: [] });
+  const src = expoPreTransform(req, b);
+  const { ast, metadata } = b.transformer.transform({ filename: req.filename, src, options, plugins: [] });
   if (!ast) return { id: req.id, code: '' };
-  if (req.src.includes('require.context')) rewriteRequireContext(ast, b);
+  const loaderReference = metadata?.loaderReference ? true : undefined;
+  const domComponentReference: string | undefined = metadata?.expoDomComponentReference ?? undefined;
+  if (src.includes('require.context')) rewriteRequireContext(ast, b);
   if (req.format === 'metro') {
     // ES module specifiers, recorded before they become `require` calls (exports condition `import` vs `require`)
     const esmDeps = new Set<string>();
@@ -143,22 +285,33 @@ function transform(req: TransformRequest): TransformResponse {
         if (b.t.isImport(p.node.callee) && b.t.isStringLiteral(p.node.arguments[0])) esmDeps.add(p.node.arguments[0].value);
       },
     });
+    // `import("x")` -> placeholder, so the CommonJS pass keeps it asynchronous (Metro: asyncType 'async')
+    b.traverse(ast, {
+      CallExpression(p: any) {
+        if (b.t.isImport(p.node.callee) && p.node.arguments.length === 1 && b.t.isStringLiteral(p.node.arguments[0])) {
+          p.node.callee = b.t.identifier(ASYNC_IMPORT);
+        }
+      },
+    });
     const base = { filename: req.filename, babelrc: false, configFile: false, cloneInputAst: false };
     // pass 1: ES modules -> CommonJS (imports become `require` calls at Program exit)
-    const cjs = b.core.transformFromAstSync(ast, req.src, { ...base, ast: true, code: false, plugins: [b.commonjs] });
+    const cjs = b.core.transformFromAstSync(ast, src, { ...base, ast: true, code: false, plugins: [b.commonjs] });
     // pass 2: `require("x")` -> `require(_dependencyMap[i], "x")`, keeping the original locations for the map
     const deps: string[] = [];
-    const out = b.core.transformFromAstSync(cjs.ast, req.src, {
+    const asyncDeps: number[] = [];
+    const optionalDeps = optionalSpecifiers(cjs.ast, b, ['require', ASYNC_IMPORT]);
+    const out = b.core.transformFromAstSync(cjs.ast, src, {
       ...base,
       sourceMaps: true,
       sourceFileName: req.filename,
       comments: false,
-      plugins: [collectDependencies(deps)],
+      plugins: [collectDependencies(deps, asyncDeps)],
     });
-    return { id: req.id, code: out.code, map: out.map, deps, esmDeps: deps.filter((d) => esmDeps.has(d)) };
+    return { id: req.id, code: out.code, map: out.map, deps, esmDeps: deps.filter((d) => esmDeps.has(d)), asyncDeps, loaderReference, domComponentReference, optionalDeps };
   }
-  const out = b.generate(ast, { sourceMaps: true, sourceFileName: req.filename, filename: req.filename, comments: false }, req.src);
-  return { id: req.id, code: out.code, map: out.map };
+  const optionalDeps = optionalSpecifiers(ast, b, ['require']);
+  const out = b.generate(ast, { sourceMaps: true, sourceFileName: req.filename, filename: req.filename, comments: false }, src);
+  return { id: req.id, code: out.code, map: out.map, loaderReference, domComponentReference, optionalDeps };
 }
 
 self.onmessage = (event: MessageEvent<TransformRequest>) => {

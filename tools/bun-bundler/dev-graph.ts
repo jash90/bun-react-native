@@ -12,17 +12,20 @@ import path from 'node:path';
 
 import { getAssetData } from './assets';
 import { ASSET_REGISTRY_VIRTUAL } from './resolver';
-import { ASSET_REGISTRY_SRC, contextModuleSource, createProject, listContextFiles, type ContextSpec, type Project } from './shared';
+import { ASSET_REGISTRY_SRC, contextModuleSource, missingModuleSource, createProject, listContextFiles, type ContextSpec, type Platform, type Project } from './shared';
 import { REQUIRE_CONTEXT_PREFIX } from './transform-worker';
 import { transformCss } from './web';
 
 const EMPTY_MODULE = '\0empty';
+const MISSING_PREFIX = '\0missing:';
 const ASSET_PREFIX = '\0asset:';
 
 interface Mod {
   key: string; // absolute file path or virtual id
   id: number;
   deps: string[]; // resolved keys, in `_dependencyMap` order
+  async: boolean[]; // per dependency: loaded with `import()` (lazy bundle, Metro asyncType 'async')
+  loaded: boolean; // false: only known as an async dependency (id assigned, not transformed yet)
   code: string; // CommonJS module body
   map: any | null; // source map of `code` (Babel), null for generated modules
   name: string; // verbose name (project-relative)
@@ -53,9 +56,13 @@ export class DevGraph {
   private entryFile: string;
   private building: Promise<void> | null = null;
   private assetFiles = new Map<string, string[]>();
+  /** URL of the last served bundle: the base of lazy bundle URLs (Metro `sourceUrl`) */
+  private bundleUrl: string | null = null;
+  /** keys loaded while applying an update (all of them go to the client as `added`) */
+  private newlyLoaded: Set<string> | null = null;
 
-  constructor(opts: { projectRoot: string; platform: 'ios' | 'android' | 'web'; entryFile: string }) {
-    this.project = createProject({ projectRoot: opts.projectRoot, platform: opts.platform, dev: true });
+  constructor(opts: { projectRoot: string; platform: Platform; entryFile: string; dom?: string }) {
+    this.project = createProject({ projectRoot: opts.projectRoot, platform: opts.platform, dev: true, dom: opts.dom });
     this.entryFile = opts.entryFile;
   }
 
@@ -65,6 +72,11 @@ export class DevGraph {
 
   has(file: string) {
     return this.modules.has(file);
+  }
+
+  /** the initial build ran (later bundle requests are incremental) */
+  get built() {
+    return this.building != null && this.modules.size > 0;
   }
 
   /** Build the whole graph from the run-before-main modules and the entry. */
@@ -92,37 +104,35 @@ export class DevGraph {
     return path.relative(root, key);
   }
 
-  private async ensure(key: string, parent: string | null): Promise<Mod> {
+  /** Add a module (and its synchronous dependencies); `lazy`: only reserve its id (async dependency). */
+  private async ensure(key: string, parent: string | null, lazy = false): Promise<Mod> {
     let mod = this.modules.get(key);
-    if (mod) {
-      if (parent) mod.inverse.add(parent);
-      return mod;
+    if (!mod) {
+      mod = { key, id: this.nextId++, deps: [], async: [], loaded: false, code: '', map: null, name: this.displayName(key), inverse: new Set() };
+      this.modules.set(key, mod);
     }
-    mod = {
-      key,
-      id: this.nextId++,
-      deps: [],
-      code: '',
-      map: null,
-      name: this.displayName(key),
-      inverse: new Set(parent ? [parent] : []),
-    };
-    this.modules.set(key, mod);
+    if (parent) mod.inverse.add(parent);
+    if (lazy || mod.loaded) return mod;
+    mod.loaded = true;
     try {
       await this.load(mod);
+      this.newlyLoaded?.add(key);
     } catch (e) {
-      this.modules.delete(key);
+      mod.loaded = false;
+      if (!mod.inverse.size) this.modules.delete(key);
       throw e;
     }
     return mod;
   }
 
   /** (Re)compute code + dependencies of a module and load dependencies that are new to the graph. */
-  private async load(mod: Mod): Promise<string[]> {
+  private async load(mod: Mod): Promise<void> {
     const { key } = mod;
-    let specs: { key: string }[] = [];
+    let specs: { key: string; async?: boolean }[] = [];
     if (key === EMPTY_MODULE) {
       mod.code = '';
+    } else if (key.startsWith(MISSING_PREFIX)) {
+      mod.code = missingModuleSource(key.slice(MISSING_PREFIX.length));
     } else if (key === ASSET_REGISTRY_VIRTUAL) {
       mod.code = ASSET_REGISTRY_SRC;
     } else if (key.startsWith(ASSET_PREFIX)) {
@@ -144,36 +154,50 @@ export class DevGraph {
       mod.contextSpec = spec;
       const files = listContextFiles(spec.dir, spec.recursive, new RegExp(spec.filter.pattern, spec.filter.flags));
       specs = files.map((rel) => ({ key: this.resolveOrThrow(path.join(spec.dir, rel), key, false) }));
-      // Metro's template; Metro-format modules load dependencies through `_dependencyMap` (lazy modes as eager:
-      // the dev graph has no async chunks)
-      mod.code = contextModuleSource(spec.mode.startsWith('lazy') ? { ...spec, mode: 'eager' } : spec, files, (i) => `require(_dependencyMap[${i}])`);
+      // Metro's template; lazy modes load each file as a lazy bundle through Expo's async require
+      const lazy = spec.mode.startsWith('lazy');
+      const asyncReq = 'require(_dependencyMap[' + files.length + '], "expo/internal/async-require-module")';
+      mod.code = contextModuleSource(spec, files, (i) => (lazy ? `${asyncReq}(_dependencyMap[${i}], _dependencyMap.paths, ${JSON.stringify(files[i])})` : `require(_dependencyMap[${i}])`));
+      if (lazy) {
+        specs = specs.map((sp) => ({ ...sp, async: true }));
+        specs.push({ key: this.resolveOrThrow('expo/internal/async-require-module', this.project.projectPkg, false) });
+      }
     } else {
       const ext = path.extname(key).slice(1);
       if (ext === 'json') {
         mod.code = `module.exports = ${fs.readFileSync(key, 'utf8')};`;
       } else if (ext === 'css' || ext === 'scss' || ext === 'sass') {
-        // web: style tag injected by the module, replaced in place on HMR (Expo's development CSS wrapper)
-        mod.code = this.project.isWeb ? (await transformCss(this.project, key, { dev: true, server: false })).js : '';
+        // Expo's CSS transform: web injects `<style>` (replaced in place on HMR), native gets an empty module;
+        // `@import`ed stylesheets are dependencies
+        const r = await transformCss(this.project, key);
+        mod.code = r.imports.map((spec, i) => `require(_dependencyMap[${i}], ${JSON.stringify(spec)});\n`).join('') + r.js;
+        specs = r.imports.map((spec) => ({ key: this.resolveSpec(spec, key, false) }));
       } else {
         const res = await this.project.transform(key, 'module', 'metro');
         mod.code = res.code ?? '';
         mod.map = res.map ?? null;
         const esm = new Set(res.esmDeps ?? []);
-        specs = (res.deps ?? []).map((spec) => ({ key: this.resolveSpec(spec, key, esm.has(spec)) }));
+        const asyncIdx = new Set(res.asyncDeps ?? []);
+        const optional = new Set(res.optionalDeps ?? []);
+        specs = (res.deps ?? []).map((spec, i) => {
+          let dep: string;
+          try {
+            dep = this.resolveSpec(spec, key, esm.has(spec));
+          } catch (e) {
+            // Metro allowOptionalDependencies: an unresolved require inside try throws only when it runs
+            if (!optional.has(spec)) throw e;
+            dep = MISSING_PREFIX + spec;
+          }
+          // only real files become lazy bundles; virtual modules are always part of the requesting bundle
+          return { key: dep, async: asyncIdx.has(i) && !dep.startsWith('\0') };
+        });
       }
     }
     const previous = new Set(mod.deps);
     mod.deps = specs.map((s) => s.key);
+    mod.async = specs.map((s) => !!s.async);
     for (const old of previous) if (!mod.deps.includes(old)) this.modules.get(old)?.inverse.delete(key);
-    const added: string[] = [];
-    await Promise.all(
-      mod.deps.map(async (dep) => {
-        const existed = this.modules.has(dep);
-        await this.ensure(dep, key);
-        if (!existed) added.push(dep);
-      })
-    );
-    return added;
+    await Promise.all(mod.deps.map((dep, i) => this.ensure(dep, key, mod.async[i])));
   }
 
   private resolveSpec(spec: string, from: string, isESM: boolean): string {
@@ -198,29 +222,78 @@ export class DevGraph {
 
   // ---------------------------------------------------------------- serialization
 
+  /**
+   * metro getModuleParams: the dependency map is an array of ids, or `{...ids, paths}` when the module has async
+   * dependencies, `paths[id]` = the lazy bundle URL (`/<path without extension>.bundle?<main bundle query>
+   * &modulesOnly=true&runModule=false`) that Expo's async require loads.
+   */
   private wrap(mod: Mod, inverseDependencies?: Record<number, number[]>) {
     const depIds = mod.deps.map((d) => this.modules.get(d)!.id);
+    let depMap = JSON.stringify(depIds);
+    if (mod.async.some(Boolean)) {
+      const query = new URL(this.bundleUrl ?? `http://localhost/index.bundle?platform=${this.platform}&dev=true`).searchParams;
+      query.set('modulesOnly', 'true');
+      query.set('runModule', 'false');
+      const paths: Record<number, string> = {};
+      mod.deps.forEach((d, i) => {
+        if (!mod.async[i]) return;
+        const rel = path.relative(this.project.projectRoot, d);
+        paths[depIds[i]] = '/' + path.join(path.dirname(rel), path.basename(rel, path.extname(rel))).split(path.sep).join('/') + '.bundle?' + query.toString();
+      });
+      depMap = JSON.stringify({ ...depIds, paths });
+    }
     const extra = inverseDependencies ? `,${JSON.stringify(inverseDependencies)}` : '';
-    return `__d(function (${WRAPPER_PARAMS}) {\n${mod.code}\n},${mod.id},${JSON.stringify(depIds)},${JSON.stringify(mod.name)}${extra});`;
+    return `__d(function (${WRAPPER_PARAMS}) {\n${mod.code}\n},${mod.id},${depMap},${JSON.stringify(mod.name)}${extra});`;
+  }
+
+  /** Loaded modules reachable from `starts` through synchronous dependencies, in id order. */
+  private syncClosure(starts: string[]): Mod[] {
+    const seen = new Set<string>();
+    const visit = (key: string) => {
+      const mod = this.modules.get(key);
+      if (!mod || !mod.loaded || seen.has(key)) return;
+      seen.add(key);
+      mod.deps.forEach((d, i) => !mod.async[i] && visit(d));
+    };
+    starts.forEach(visit);
+    return [...seen].map((k) => this.modules.get(k)!).sort((a, b) => a.id - b.id);
+  }
+
+  private modulesWithMap(mods: Mod[], head: string) {
+    const parts: string[] = [head];
+    let line = head.split('\n').length - 1;
+    const sections: any[] = [];
+    for (const mod of mods) {
+      const code = this.wrap(mod) + '\n';
+      if (mod.map) sections.push({ offset: { line: line + 1, column: 0 }, map: this.relativeMap(mod.map) });
+      parts.push(code);
+      line += code.split('\n').length - 1;
+    }
+    return { parts, sections };
   }
 
   /** The whole development bundle (prelude, Metro require runtime, polyfills, modules, run statements) + map. */
   async serialize(bundleUrl: string, mapUrl: string): Promise<{ code: string; map: any }> {
     await this.build();
     const { project } = this;
+    this.bundleUrl = bundleUrl;
     const runtime = fs.readFileSync(project.projectRequire.resolve('@expo/cli/build/metro-require/require.js'), 'utf8');
     const head = [project.prelude(), `(function (global) {\n${runtime}\n})(globalThis);`, ...(await project.polyfillSources())].join('\n') + '\n';
-    const parts: string[] = [head];
-    let line = head.split('\n').length - 1;
-    const sections: any[] = [];
-    const ordered = [...this.modules.values()].sort((a, b) => a.id - b.id);
-    for (const mod of ordered) {
-      const code = this.wrap(mod) + '\n';
-      if (mod.map) sections.push({ offset: { line: line + 1, column: 0 }, map: this.relativeMap(mod.map) });
-      parts.push(code);
-      line += code.split('\n').length - 1;
-    }
+    // modules behind `import()` are not part of the main bundle (Metro `lazy=true`)
+    const { parts, sections } = this.modulesWithMap(this.syncClosure(this.roots), head);
     for (const r of this.roots) parts.push(`__r(${this.modules.get(r)!.id});\n`);
+    parts.push(`//# sourceMappingURL=${mapUrl}\n//# sourceURL=${bundleUrl}\n`);
+    return { code: parts.join(''), map: { version: 3, sections } };
+  }
+
+  /**
+   * Lazy bundle (`<file>.bundle?modulesOnly=true&runModule=false`): `__d` definitions of the module and its
+   * synchronous dependencies, nothing to run. Modules the client already has are ignored by its `__d`.
+   */
+  async serializeLazy(file: string, bundleUrl: string, mapUrl: string): Promise<{ code: string; map: any }> {
+    await this.build();
+    await this.ensure(file, null);
+    const { parts, sections } = this.modulesWithMap(this.syncClosure([file]), '');
     parts.push(`//# sourceMappingURL=${mapUrl}\n//# sourceURL=${bundleUrl}\n`);
     return { code: parts.join(''), map: { version: 3, sections } };
   }
@@ -267,7 +340,9 @@ export class DevGraph {
     if (!touched.size) return null;
 
     const added = new Set<string>();
+    this.newlyLoaded = added;
     const modified: string[] = [];
+    try {
     for (const key of touched) {
       const mod = this.modules.get(key)!;
       if (key.startsWith(ASSET_PREFIX)) {
@@ -276,11 +351,16 @@ export class DevGraph {
         const r = this.project.resolver.resolve(path.join(dir, base), path.join(dir, 'index.js'), false);
         if (r.type === 'assetFiles') this.assetFiles.set(key, r.filePaths);
       }
+      if (!mod.loaded) continue; // a lazy module the client has not loaded yet: fetched fresh when imported
       const before = this.wrap(mod);
-      for (const a of await this.load(mod)) added.add(a);
+      await this.load(mod);
       if (this.wrap(mod) !== before) modified.push(key);
     }
-    // newly reachable modules may pull in more modules; `load` already loaded them recursively
+    } finally {
+      this.newlyLoaded = null;
+    }
+    for (const key of touched) added.delete(key);
+    // every module loaded while applying the change (transitively) is sent as `added`
     const entry = (key: string): HmrModule => {
       const mod = this.modules.get(key)!;
       const sourceURL = urls.bundleUrl(mod.name);

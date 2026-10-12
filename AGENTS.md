@@ -51,9 +51,11 @@ Docs: https://docs.expo.dev/eas/index.md
   changing it run `bun run test:tools` and check `hermesc` still compiles a minified bundle.
 - Bundling uses `tools/bun-bundler/` (Bun.build + Metro-equivalent resolver + Expo Babel transform) instead of Metro:
   native release builds call `tools/bun-bundler/cli.ts` via `plugins/with-bun-bundler.js`; `bun run start` is its dev
-  server for iOS/Android/web (Metro module format, HMR/Fast Refresh, inspector proxy, web SSR + API routes via
-  expo-server) and `bun run export` its `expo export` (EAS Update layout, web single/static/server); publish OTA with
-  `bunx eas-cli update --skip-bundler`. `bun run start:metro` / `web:metro` / `export:metro` are the Metro escape hatch.
+  server for iOS/Android/web (Metro module format, lazy `import()` bundles, HMR/Fast Refresh, inspector proxy, web
+  SSR + API routes + loaders via expo-server, DOM components) and `bun run export` its `expo export` (EAS Update
+  layout, web single/static/server); publish OTA with `bunx eas-cli update --skip-bundler`. Resolution follows Expo
+  CLI's resolver chain (`tools/bun-bundler/resolver.ts`) and CSS Expo's transform worker (PostCSS, Sass); only React
+  Server Components still need Metro. `bun run start:metro` / `web:metro` / `export:metro` are the Metro escape hatch.
   After changing it run `bun run test:tools`, bundle both platforms, compile with `hermesc`, compare `export` with
   `export:metro` and check web in a browser. Details: `docs/bun-react-native/BUNDLER.md`.
 - `bun.lock` must reference the default registry (`""`); `bunfig.toml` pins `https://registry.npmjs.org/`.

@@ -26,6 +26,12 @@ export function expoHelpers(projectRoot: string) {
     serializeHtmlWithAssets: cli('start/server/metro/serializeHtml').serializeHtmlWithAssets,
     createTemplateHtmlFromExpoConfigAsync: cli('start/server/webTemplate').createTemplateHtmlFromExpoConfigAsync,
     fetchManifest: cli('start/server/metro/fetchRouterManifest').fetchManifest,
+    inflateManifest: cli('start/server/metro/fetchRouterManifest').inflateManifest,
+    // server data loaders
+    fromRuntimeManifestRoute: cli('start/server/metro/resolveLoader').fromRuntimeManifestRoute,
+    fromServerManifestRoute: cli('start/server/metro/resolveLoader').fromServerManifestRoute,
+    getContextKey: req('expo-router/build/matchers').getContextKey as (contextKey: string) => string,
+    resolveLoaderContextKey: req('expo-server/private').resolveLoaderContextKey as (key: string, params: any) => string,
     getErrorOverlayHtmlAsync: cli('start/server/metro/metroErrorInterface').getErrorOverlayHtmlAsync,
     createFaviconAsString: req('@expo/router-server/build/utils/html').createFaviconAsString,
     // native
@@ -46,6 +52,7 @@ export type ExportFiles = Map<
     routeId?: string;
     apiRouteId?: string;
     middlewareId?: string;
+    loaderId?: string;
     assetId?: string;
   }
 >;

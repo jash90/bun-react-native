@@ -16,14 +16,15 @@ import path from 'node:path';
 
 import { expoHelpers } from './expo-helpers';
 import { createProject, getBaseUrl, getExpoConfig, getRouterRoot } from './shared';
-import { buildWeb, cssHmrId, md5 } from './web';
-import { buildServerFunction, importServerBundle } from './web-export';
+import { buildWeb, md5, type WebBuildResult } from './web';
+import { createLoaderRunner, type LoaderRunner } from './loaders';
+import { buildServerFunction, cssArtifacts, importServerBundle } from './web-export';
 
 export function createWebDevHandler(opts: { projectRoot: string; port: number }) {
   const { projectRoot } = opts;
   const h = expoHelpers(projectRoot);
   let exp = getExpoConfig(projectRoot);
-  let rendering: Promise<{ render: any; css: { originFilename: string; css: string }[] }> | null = null;
+  let rendering: Promise<{ render: any; css: WebBuildResult['css'] }> | null = null;
   const functions = new Map<string, Promise<any>>();
   let handler: ((request: Request) => Promise<Response>) | null = null;
 
@@ -73,17 +74,59 @@ export function createWebDevHandler(opts: { projectRoot: string; port: number })
     return p;
   }
 
-  async function renderHtml(request: Request) {
+  const useServerLoaders = () => !!exp.extra?.router?.unstable_useServerDataLoaders;
+  const isSSREnabled = () => output() === 'server' && exp.extra?.router?.unstable_useServerRendering === true;
+  let loaders: LoaderRunner | null = null;
+  const loaderRunner = () =>
+    (loaders ??= createLoaderRunner({ projectRoot, exp, routerRoot: routerRoot(), dev: true, minify: false }));
+
+  /** Expo getDevServerRenderOptionsAsync / executeServerDataLoaderAsync for a server manifest route */
+  async function runLoader(request: Request, route: any) {
+    const url = new URL(request.url);
+    const resolved = h.fromServerManifestRoute(url.pathname, route);
+    if (!resolved) return null;
+    const file = path.resolve(projectRoot, routerRoot(), resolved.file);
+    // the request is only passed with server rendering; static rendering gets no request data
+    const result = await loaderRunner().run(file, isSSREnabled() ? request : undefined, resolved.params);
+    if (!result) return null;
+    return { resolved, value: result.value };
+  }
+
+  /** Expo getStaticPageAsync with server rendering: streaming render with request, metadata and loader data */
+  async function streamHtml(request: Request, route: any) {
     const { render, css } = await loadRender();
     const location = new URL(request.url);
-    const template = await render.getStaticContent(new URL(location.pathname + location.search, `http://localhost:${opts.port}`));
-    const resources = css.map(({ originFilename, css }) => ({
-      type: 'css',
-      originFilename,
-      filename: originFilename,
-      source: css,
-      metadata: { hmrId: cssHmrId(originFilename) },
-    }));
+    const resources = css.flatMap((entry) => cssArtifacts(entry, false));
+    const inlineCss = resources.filter((a) => a.type === 'css').map((a) => ({ source: a.source, hmrId: a.metadata.hmrId }));
+    const externalCss = resources.filter((a) => a.type === 'css-external').map((a) => ({ href: a.filename, media: a.metadata.media }));
+    const resolved = h.fromServerManifestRoute(location.pathname, route);
+    const params = resolved?.params ?? {};
+    const metadata = await render.resolveMetadata({ route: { file: route.file, page: route.page }, request, params });
+    let loader: any;
+    if (useServerLoaders()) {
+      const loaded = await runLoader(request, route);
+      if (loaded) {
+        const data = loaded.value instanceof Response ? await loaded.value.json() : loaded.value;
+        loader = { data: data ?? null, key: h.resolveLoaderContextKey(loaded.resolved.contextKey, loaded.resolved.params) };
+      }
+    }
+    return render.getStreamingContent(location, { loader, metadata, request, assets: { css: [], externalCss, inlineCss, js: [devBundleUrl()] } });
+  }
+
+  async function renderHtml(request: Request, route: any) {
+    if (isSSREnabled()) return streamHtml(request, route);
+    const { render, css } = await loadRender();
+    const location = new URL(request.url);
+    let renderOpts: any;
+    if (useServerLoaders()) {
+      const loaded = await runLoader(request, route);
+      if (loaded) {
+        const data = loaded.value instanceof Response ? await loaded.value.json() : (loaded.value ?? null);
+        renderOpts = { loader: { data, key: h.resolveLoaderContextKey(loaded.resolved.contextKey, loaded.resolved.params) } };
+      }
+    }
+    const template = await render.getStaticContent(new URL(location.pathname + location.search, `http://localhost:${opts.port}`), renderOpts);
+    const resources = css.flatMap((entry) => cssArtifacts(entry, false));
     return h.serializeHtmlWithAssets({
       isExporting: false,
       resources,
@@ -113,6 +156,8 @@ export function createWebDevHandler(opts: { projectRoot: string; port: number })
       {
         async getRoutesManifest() {
           const manifest = await h.fetchManifest(projectRoot, { ...exp.extra?.router, preserveRedirectAndRewrites: true, appDir });
+          // like Expo in development: every HTML route may have a loader (404 data when it has none)
+          if (manifest && useServerLoaders()) for (const route of manifest.htmlRoutes) route.loader = `_expo/loaders${route.page}.js`;
           return (
             manifest ?? {
               htmlRoutes: [{ file: 'index.js', page: '/index', routeKeys: {}, namedRegex: /^\/(?:index)?\/?$/i }],
@@ -123,9 +168,9 @@ export function createWebDevHandler(opts: { projectRoot: string; port: number })
             }
           );
         },
-        async getHtml(request: Request) {
+        async getHtml(request: Request, route: any) {
           try {
-            return await renderHtml(request);
+            return await renderHtml(request, route);
           } catch (e) {
             return errorPage(e);
           }
@@ -144,8 +189,16 @@ export function createWebDevHandler(opts: { projectRoot: string; port: number })
           }
           return loadFunction(resolveFile(route.file));
         },
-        async getLoaderData() {
-          return new Response(null, { status: 404 });
+        async getLoaderData(request: Request, route: any) {
+          if (!useServerLoaders()) return new Response(null, { status: 404 });
+          try {
+            const loaded = await runLoader(request, route);
+            if (!loaded) return new Response(null, { status: 404 });
+            if (loaded.value instanceof Response && isSSREnabled()) return loaded.value;
+            return Response.json(loaded.value instanceof Response ? await loaded.value.json() : (loaded.value ?? null));
+          } catch (e) {
+            return errorPage(e);
+          }
         },
       }
     );
@@ -157,9 +210,11 @@ export function createWebDevHandler(opts: { projectRoot: string; port: number })
     invalidate(changed: string[]) {
       rendering = null;
       functions.clear();
+      loaders?.invalidate();
       if (changed.some((f) => /(^|[\\/])(app\.json|app\.config\.[cm]?[jt]s|package\.json)$/.test(f))) {
         exp = getExpoConfig(projectRoot);
         handler = null;
+        loaders = null;
       }
     },
 

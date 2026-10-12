@@ -13,12 +13,13 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { bundle } from './bundle';
+import { exportDomComponents } from './dom';
 import { expoHelpers, type ExportFiles } from './expo-helpers';
 import { getBaseUrl, getExpoConfig } from './shared';
 import { md5 } from './web';
 import { exportWebAsync } from './web-export';
 
-export type ExportPlatform = 'ios' | 'android' | 'web';
+export type ExportPlatform = 'ios' | 'android' | 'web' | 'tvos' | 'macos';
 
 export interface ExportOptions {
   projectRoot: string;
@@ -34,7 +35,7 @@ export interface ExportOptions {
 }
 
 /** One native bundle for EAS Update: Bun bundle -> Hermes bytecode (Expo's buildHermesBundleAsync). */
-async function exportNativeBundle(opts: ExportOptions, platform: 'ios' | 'android', files: ExportFiles, exp: any) {
+async function exportNativeBundle(opts: ExportOptions, platform: Exclude<ExportPlatform, 'web'>, files: ExportFiles, exp: any) {
   const { projectRoot } = opts;
   const h = expoHelpers(projectRoot);
   const entry = h.resolveRelativeEntryPoint(projectRoot, { platform });
@@ -52,7 +53,10 @@ async function exportNativeBundle(opts: ExportOptions, platform: 'ios' | 'androi
       sourcemapOutput: mapFile,
       log: opts.log,
     });
-    const code = fs.readFileSync(jsFile, 'utf8');
+    let code = fs.readFileSync(jsFile, 'utf8');
+    // DOM components: content-addressed web bundles; the proxy's `<md5(url)>.html` points at the html's md5
+    const dom = await exportDomComponents({ projectRoot, references: result.domComponents, dev: opts.dev, md5Filenames: true, files });
+    for (const d of dom) if (d.replace) code = code.split(d.replace[0]).join(d.replace[1]);
     const map = mapFile ? fs.readFileSync(mapFile, 'utf8') : null;
     const base = `_expo/static/js/${platform}/${path.basename(entry).replace(/\.\w+$/, '')}-${md5(code)}`;
     // Expo compiles bytecode for production Hermes exports only (MetroBundlerDevServer isHermesEnabled: !dev)
@@ -68,8 +72,8 @@ async function exportNativeBundle(opts: ExportOptions, platform: 'ios' | 'androi
       files.set(fileName, { contents: map ? `${code}\n//# sourceMappingURL=${path.basename(fileName)}.map` : code, originFilename: entry });
       if (map) files.set(`${fileName}.map`, { contents: map, originFilename: entry });
     }
-    opts.log(`${platform === 'ios' ? 'iOS' : 'Android'} Bundled with Bun (${result.modules.length} files) -> ${fileName}`);
-    return { fileName, assets: result.assets };
+    opts.log(`${{ ios: 'iOS', android: 'Android', tvos: 'tvOS', macos: 'macOS' }[platform]} Bundled with Bun (${result.modules.length} files) -> ${fileName}`);
+    return { fileName, assets: result.assets, domMetadata: dom.flatMap((d) => d.metadata) };
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
@@ -94,22 +98,24 @@ export async function exportAppAsync(opts: ExportOptions) {
   const files: ExportFiles = new Map();
   await h.copyPublicFolderAsync(h.getPublicFolderPath(projectRoot), outputDir);
 
-  const native = opts.platforms.filter((p): p is 'ios' | 'android' => p !== 'web');
+  const native = opts.platforms.filter((p): p is Exclude<ExportPlatform, 'web'> => p !== 'web');
   // Expo writes metadata.json whenever a platform is bundled as a single bundle ("SPA platforms": native, and
   // web with `web.output: single`); web entries are left out of it
   const spaWeb = opts.platforms.includes('web') && !['static', 'server'].includes(exp.web?.output ?? '');
   if (native.length || spaWeb) {
     const bundles: Record<string, { assets: any[] }> = {};
     const fileNames: Record<string, string[]> = {};
+    const domComponentAssetsMetadata: Record<string, { path: string; ext: string }[]> = {};
     // sequential: each bundle uses the whole worker pool
     for (const platform of native) {
       const r = await exportNativeBundle(opts, platform, files, exp);
       bundles[platform] = { assets: r.assets };
       fileNames[platform] = [r.fileName];
+      if (r.domMetadata.length) domComponentAssetsMetadata[platform] = r.domMetadata;
     }
     const { assets, embeddedHashSet } = await h.exportAssetsAsync(projectRoot, { files, exp, outputDir, bundles, baseUrl });
     if (opts.dumpAssetmap) files.set('assetmap.json', { contents: JSON.stringify(h.createAssetMap({ assets })) });
-    files.set('metadata.json', { contents: JSON.stringify(h.createMetadataJson({ bundles, fileNames, embeddedHashSet })) });
+    files.set('metadata.json', { contents: JSON.stringify(h.createMetadataJson({ bundles, fileNames, embeddedHashSet, domComponentAssetsMetadata })) });
   }
 
   let web: Awaited<ReturnType<typeof exportWebAsync>> | null = null;

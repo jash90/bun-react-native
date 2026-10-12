@@ -17,6 +17,7 @@ import type { Server, ServerWebSocket } from 'bun';
 
 import { getAssetRecord } from './assets';
 import { DevGraph, type HmrUpdate } from './dev-graph';
+import { domComponentHtml, domRoot } from './dom';
 import { createWebDevHandler } from './web-dev';
 
 export interface DevServerOptions {
@@ -25,12 +26,11 @@ export interface DevServerOptions {
   host?: string;
 }
 
-type Platform = 'ios' | 'android' | 'web';
+type Platform = 'ios' | 'android' | 'web' | 'tvos' | 'macos';
 
-const PLATFORM_LABEL: Record<Platform, string> = { ios: 'iOS', android: 'Android', web: 'Web' };
-const platformOf = (url: string): Platform =>
-  /[?&]platform=android/.test(url) ? 'android' : /[?&]platform=web/.test(url) ? 'web' : 'ios';
-type WsData = { kind: 'hot' | 'message' | 'inspector'; platform?: Platform; [k: string]: any };
+const PLATFORM_LABEL: Record<Platform, string> = { ios: 'iOS', android: 'Android', web: 'Web', tvos: 'tvOS', macos: 'macOS' };
+const platformOf = (url: string): Platform => (url.match(/[?&]platform=(android|web|tvos|macos)(&|$)/)?.[1] as Platform) ?? 'ios';
+type WsData = { kind: 'hot' | 'message' | 'inspector'; platform?: Platform; key?: string; [k: string]: any };
 
 const IGNORED_DIRS = /(^|[\\/])(node_modules|\.git|ios|android|\.expo|dist|coverage)([\\/]|$)/;
 
@@ -41,53 +41,91 @@ export async function startDevServer(opts: DevServerOptions) {
   const pkg = JSON.parse(fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf8'));
   const entryFile = path.relative(projectRoot, req.resolve(pkg.main ?? './index.js', { paths: [projectRoot] }));
 
-  const graphs = new Map<Platform, DevGraph>();
-  const lastBundleUrl = new Map<Platform, string>();
+  /** one dev graph per platform, plus one per DOM component (`<platform>|dom:<transform.dom>`) */
+  const graphs = new Map<string, DevGraph>();
+  const lastBundleUrl = new Map<string, string>();
+  const keyOf = (u: URL | string) => {
+    const url = typeof u === 'string' ? new URL(u, 'http://localhost') : u;
+    const dom = url.searchParams.get('transform.dom');
+    return platformOf(url.toString()) + (dom ? `|dom:${dom}` : '');
+  };
+  const platformOfKey = (key: string) => key.split('|')[0] as Platform;
+  const labelOf = (key: string) => PLATFORM_LABEL[platformOfKey(key)] + (key.includes('|dom:') ? ' DOM component' : '');
   const hotClients = new Set<ServerWebSocket<WsData>>();
   const messageClients = new Set<ServerWebSocket<WsData>>();
-  const mapCache = new Map<Platform, { raw: any; flat: any; trace: any }>();
+  const mapCache = new Map<string, { raw: any; flat: any; trace: any }>();
+  /** lazy bundles (`modulesOnly=true`): source maps by `<platform> <pathname>` */
+  const lazyMaps = new Map<string, { raw: any; flat: any; trace: any }>();
+  const lazyKey = (u: URL) => `${keyOf(u)} ${u.pathname.replace(/\.(bundle|map)$/, '')}`;
+
+  /** `/<path>.bundle?modulesOnly=true`: the lazy bundle of the file at <path> (Metro async import) */
+  async function serializeLazy(url: URL) {
+    const g = graph(keyOf(url));
+    const rel = decodeURIComponent(url.pathname.replace(/^\//, '').replace(/\.(bundle|map)$/, ''));
+    const r = g.project.resolver.resolve('./' + rel, path.join(projectRoot, 'package.json'), false);
+    if (r.type !== 'sourceFile') throw new Error(`Cannot resolve lazy bundle ${url.pathname}`);
+    const bundleUrl = new URL(url);
+    bundleUrl.pathname = url.pathname.replace(/\.map$/, '.bundle');
+    const mapUrl = new URL(bundleUrl);
+    mapUrl.pathname = bundleUrl.pathname.replace(/\.bundle$/, '.map');
+    const result = await g.serializeLazy(r.filePath, bundleUrl.toString(), mapUrl.toString());
+    lazyMaps.set(lazyKey(url), { raw: result.map, flat: null, trace: null });
+    return result.code;
+  }
+  function flatLazyMap(key: string) {
+    const entry = lazyMaps.get(key);
+    if (entry && !entry.trace) {
+      entry.trace = new FlattenMap(entry.raw);
+      entry.flat = encodedMap(entry.trace);
+    }
+    return entry ?? null;
+  }
   let revision = 0;
 
-  const graph = (platform: Platform) => {
-    let g = graphs.get(platform);
+  const graph = (key: string) => {
+    let g = graphs.get(key);
     if (!g) {
-      g = new DevGraph({ projectRoot, platform, entryFile });
-      graphs.set(platform, g);
+      const dom = key.includes('|dom:') ? key.slice(key.indexOf('|dom:') + 5) : undefined;
+      // DOM components: a web bundle of expo/dom/entry.js that registers the component (transform option `dom`)
+      const entry = dom ? path.relative(projectRoot, req.resolve('expo/dom/entry.js')) : entryFile;
+      g = new DevGraph({ projectRoot, platform: platformOfKey(key), entryFile: entry, dom });
+      graphs.set(key, g);
     }
     return g;
   };
 
   // one serialization per platform at a time (bundle + parallel source map requests share it)
-  const inflight = new Map<Platform, Promise<string>>();
-  function serialize(platform: Platform, url: URL): Promise<string> {
-    let p = inflight.get(platform);
+  const inflight = new Map<string, Promise<string>>();
+  function serialize(url: URL): Promise<string> {
+    const key = keyOf(url);
+    let p = inflight.get(key);
     if (!p) {
-      p = serializeNow(platform, url).finally(() => inflight.delete(platform));
-      inflight.set(platform, p);
+      p = serializeNow(key, url).finally(() => inflight.delete(key));
+      inflight.set(key, p);
     }
     return p;
   }
 
-  async function serializeNow(platform: Platform, url: URL) {
-    const g = graph(platform);
+  async function serializeNow(key: string, url: URL) {
+    const g = graph(key);
     const t0 = performance.now();
-    const fresh = !g.has(path.resolve(projectRoot, entryFile));
+    const fresh = !g.built;
     const mapUrl = new URL(url);
     mapUrl.pathname = url.pathname.replace(/\.bundle$/, '.map');
     const result = await g.serialize(url.toString(), mapUrl.toString());
-    mapCache.delete(platform);
-    mapCache.set(platform, { raw: result.map, flat: null, trace: null });
-    lastBundleUrl.set(platform, url.toString());
+    mapCache.delete(key);
+    mapCache.set(key, { raw: result.map, flat: null, trace: null });
+    lastBundleUrl.set(key, url.toString());
     const { cacheHits, transformed } = g.project.stats;
     console.log(
-      `${PLATFORM_LABEL[platform]} Bundled ${Math.round(performance.now() - t0)}ms with Bun` +
+      `${labelOf(key)} Bundled ${Math.round(performance.now() - t0)}ms with Bun` +
         (fresh ? ` (${transformed} transformed, ${cacheHits} from cache)` : '')
     );
     return result.code;
   }
 
-  function flatMap(platform: Platform) {
-    const entry = mapCache.get(platform);
+  function flatMap(key: string) {
+    const entry = mapCache.get(key);
     if (!entry) return null;
     if (!entry.trace) {
       entry.trace = new FlattenMap(entry.raw);
@@ -97,11 +135,11 @@ export async function startDevServer(opts: DevServerOptions) {
   }
 
   // ---- HMR
-  function sendHot(platform: Platform, msg: object) {
+  function sendHot(key: string, msg: object) {
     const data = JSON.stringify(msg);
     let sent = 0;
     for (const ws of hotClients) {
-      if (ws.data.platform === platform) {
+      if (ws.data.key === key) {
         ws.send(data);
         sent++;
       }
@@ -113,8 +151,9 @@ export async function startDevServer(opts: DevServerOptions) {
 
   async function onFilesChanged(files: string[]) {
     web.invalidate(files);
-    for (const [platform, g] of graphs) {
-      const base = lastBundleUrl.get(platform);
+    for (const [key, g] of graphs) {
+      const platform = platformOfKey(key);
+      const base = lastBundleUrl.get(key);
       const urlFor = (ext: string) => (name: string) => {
         const u = new URL(base ?? `http://localhost:${port}/index.bundle?platform=${platform}&dev=true`);
         u.pathname = '/' + name.replace(/\.[^./]+$/, '') + ext;
@@ -126,17 +165,18 @@ export async function startDevServer(opts: DevServerOptions) {
       } catch (e: any) {
         const message = String(e?.message ?? e);
         console.error(message);
-        sendHot(platform, { type: 'error', body: { type: 'TransformError', message, errors: [{ description: message }] } });
+        sendHot(key, { type: 'error', body: { type: 'TransformError', message, errors: [{ description: message }] } });
         continue;
       }
       if (!update) continue;
-      mapCache.delete(platform); // positions of modified modules changed; rebuilt on next bundle/map request
+      mapCache.delete(key); // positions of modified modules changed; rebuilt on next bundle/map request
+      for (const k of lazyMaps.keys()) if (k.startsWith(key + ' ')) lazyMaps.delete(k);
       const names = [...update.modified, ...update.added].map((m) => g.nameOf(m.module[0]));
-      const sent = sendHot(platform, { type: 'update-start', body: { isInitialUpdate: false } });
+      const sent = sendHot(key, { type: 'update-start', body: { isInitialUpdate: false } });
       if (sent) {
-        sendHot(platform, { type: 'update', body: { ...update, revisionId: String(++revision), isInitialUpdate: false } });
-        sendHot(platform, { type: 'update-done' });
-        console.log(`[HMR ${platform}] ${names.join(', ')}`);
+        sendHot(key, { type: 'update', body: { ...update, revisionId: String(++revision), isInitialUpdate: false } });
+        sendHot(key, { type: 'update-done' });
+        console.log(`[HMR ${labelOf(key).toLowerCase().replace(' dom component', ' dom')}] ${names.join(', ')}`);
       } else {
         // no Fast Refresh client: reload the app instead
         for (const ws of messageClients) ws.send(JSON.stringify({ version: 2, method: 'reload' }));
@@ -193,7 +233,7 @@ export async function startDevServer(opts: DevServerOptions) {
       if (pathname === '/status') return new Response('packager-status:running');
       if (pathname.endsWith('.bundle')) {
         try {
-          const code = await serialize(platform, url);
+          const code = searchParams.get('modulesOnly') === 'true' ? await serializeLazy(url) : await serialize(url);
           return new Response(code, { headers: { 'Content-Type': 'application/javascript; charset=UTF-8' } });
         } catch (e: any) {
           const message = String(e?.message ?? e);
@@ -202,18 +242,34 @@ export async function startDevServer(opts: DevServerOptions) {
         }
       }
       if (pathname.endsWith('.map')) {
-        if (!mapCache.has(platform)) await serialize(platform, new URL(url.toString().replace(/\.map(\?|$)/, '.bundle$1')));
-        return Response.json(flatMap(platform)!.flat);
+        if (searchParams.get('modulesOnly') === 'true') {
+          if (!lazyMaps.has(lazyKey(url))) await serializeLazy(url);
+          return Response.json(flatLazyMap(lazyKey(url))!.flat);
+        }
+        const bundleUrl = new URL(url.toString().replace(/\.map(\?|$)/, '.bundle$1'));
+        if (!mapCache.has(keyOf(url))) await serialize(bundleUrl);
+        return Response.json(flatMap(keyOf(url))!.flat);
       }
       if (pathname.startsWith('/assets/')) return serveAsset(projectRoot, pathname, searchParams.get('platform') ?? 'web');
       if (pathname === '/symbolicate' && request.method === 'POST') {
         const body = await request.json();
-        const bundleFrame = (body.stack ?? []).map((f: any) => f?.file).find((f: string) => /\.bundle(\?|$)/.test(f ?? ''));
-        const p = bundleFrame ? platformOf(bundleFrame) : platform;
-        if (!mapCache.has(p)) return Response.json({ stack: body.stack ?? [], codeFrame: null });
-        return Response.json(symbolicate(projectRoot, body.stack ?? [], flatMap(p)!.trace, originalPositionFor));
+        const traceFor = (file: string) => {
+          if (/[?&]modulesOnly=true/.test(file)) return flatLazyMap(lazyKey(new URL(file)))?.trace ?? null;
+          const key = keyOf(file);
+          return mapCache.has(key) ? flatMap(key)!.trace : null;
+        };
+        return Response.json(symbolicate(projectRoot, body.stack ?? [], traceFor, originalPositionFor));
       }
       if (pathname === '/open-stack-frame' || pathname === '/open-url') return new Response('');
+      if (pathname.startsWith('/_expo/@dom')) {
+        // Expo DomComponentsMiddleware: the HTML the native WebView loads for a `"use dom"` component
+        const file = searchParams.get('file');
+        if (!file || !file.startsWith('file://')) return new Response(`Invalid file path: ${file}`, { status: 400 });
+        const { virtualEntry, dom } = domRoot(projectRoot, file);
+        const bundle = new URL(`/${path.relative(projectRoot, virtualEntry).replace(/\.js$/, '')}.bundle`, `http://${request.headers.get('host')}`);
+        for (const [k, v] of Object.entries({ platform: 'web', dev: 'true', hot: 'false', lazy: 'true', 'transform.dom': dom, 'transform.engine': 'hermes' })) bundle.searchParams.set(k, v);
+        return new Response(domComponentHtml(projectRoot, bundle.toString(), path.basename(file)), { headers: { 'Content-Type': 'text/html' } });
+      }
       const webResponse = await web.fetch(request);
       if (webResponse) return webResponse;
       return new Response('Not found', { status: 404 });
@@ -240,6 +296,7 @@ export async function startDevServer(opts: DevServerOptions) {
         if (msg.type === 'register-entrypoints') {
           const entry = String(msg.entryPoints?.[0] ?? '');
           ws.data.platform = platformOf(entry);
+          ws.data.key = keyOf(entry);
           hotClients.add(ws);
           ws.send(JSON.stringify({ type: 'bundle-registered' }));
         } else if (msg.type === 'log') {
@@ -272,9 +329,11 @@ function serveAsset(projectRoot: string, pathname: string, platform: string): Re
 
 // ---------------------------------------------------------------- symbolication
 
-function symbolicate(projectRoot: string, stack: any[], trace: any, originalPositionFor: any) {
+function symbolicate(projectRoot: string, stack: any[], traceFor: (file: string) => any, originalPositionFor: any) {
   const mapped = stack.map((frame: any) => {
     if (!frame?.file || !/\.bundle(\?|$)/.test(frame.file) || frame.lineNumber == null) return frame;
+    const trace = traceFor(frame.file);
+    if (!trace) return frame;
     const pos = originalPositionFor(trace, { line: frame.lineNumber, column: Math.max(0, (frame.column ?? 1) - 1) });
     if (pos.source == null) return frame;
     return { ...frame, file: path.resolve(projectRoot, pos.source), lineNumber: pos.line, column: (pos.column ?? 0) + 1, methodName: pos.name ?? frame.methodName };

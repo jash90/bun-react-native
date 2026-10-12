@@ -157,3 +157,53 @@ describe('Resolver (Metro-equivalent)', () => {
     expect(() => resolver().resolve('does-not-exist', from(), true)).toThrow();
   });
 });
+
+describe('Expo CLI resolver layers (withMetroMultiPlatform)', () => {
+  const make = (opts: Partial<ConstructorParameters<typeof Resolver>[0]> = {}) =>
+    new Resolver({ projectRoot: root, platform: 'ios', sourceExts: SOURCE_EXTS, assetExts: ASSET_EXTS, env: {}, ...opts });
+
+  beforeAll(() => {
+    write('node_modules/react/package.json', '{"name":"react","main":"index.js"}');
+    write('node_modules/react/index.js');
+    write('node_modules/react/cjs/react.production.js');
+    write('src/pick.ios.ts');
+    write('src/pick.ts');
+    write('src/pick2.ios.tsx');
+    write('src/pick2.native.ts');
+    write('node_modules/expo/package.json', JSON.stringify({ name: 'expo', main: 'index.js', dependencies: { 'only-in-expo': '1' } }));
+    write('node_modules/expo/index.js');
+    write('node_modules/expo/node_modules/only-in-expo/package.json', '{"name":"only-in-expo","main":"index.js"}');
+    write('node_modules/expo/node_modules/only-in-expo/index.js');
+    write('node_modules/expo-router/package.json', '{"name":"expo-router","main":"index.js"}');
+    write('node_modules/expo-router/index.js');
+    write('node_modules/expo-router/react-navigation.js');
+    write('node_modules/@react-navigation/core/package.json', '{"name":"@react-navigation/core","main":"index.js"}');
+    write('node_modules/@react-navigation/core/index.js');
+    write('node_modules/some-lib/index.js');
+  });
+
+  test('development: production React builds are empty modules (requestDevMockProdReact)', () => {
+    const origin = path.join(root, 'node_modules/react/index.js');
+    expect(make({ dev: true }).resolve('./cjs/react.production.js', origin, false)).toEqual({ type: 'empty' });
+    expect(rel(make({ dev: false }).resolve('./cjs/react.production.js', origin, false))).toBe('node_modules/react/cjs/react.production.js');
+  });
+
+  test('tvOS: every .tvos.* then .ios.* then .native.* extension (Expo platform extensions)', () => {
+    const tv = make({ platform: 'tvos', platformExtensions: ['tvos', 'ios', 'native'] });
+    expect(rel(tv.resolve('./pick', from(), true))).toBe('src/pick.ios.ts');
+    expect(rel(tv.resolve('./pick2', from(), true))).toBe('src/pick2.ios.tsx');
+    // plain iOS (Metro order per extension) picks the .native.ts file first
+    expect(rel(make().resolve('./pick2', from(), true))).toBe('src/pick2.native.ts');
+  });
+
+  test("dependencies of expo resolve from expo's own node_modules (createFallbackModuleResolver)", () => {
+    expect(rel(make().resolve('only-in-expo', from(), true))).toBe('node_modules/expo/node_modules/only-in-expo/index.js');
+  });
+
+  test('@react-navigation/core is expo-router/react-navigation for libraries, and an error in app code', () => {
+    const lib = path.join(root, 'node_modules/some-lib/index.js');
+    expect(rel(make().resolve('@react-navigation/core', lib, false))).toBe('node_modules/expo-router/react-navigation.js');
+    expect(() => make().resolve('@react-navigation/core', from(), false)).toThrow('no longer compatible with react-navigation');
+    expect(rel(make({ env: { EXPO_ROUTER_DISABLE_RN_NAVIGATION_CHECK: '1' } }).resolve('@react-navigation/core', from(), false))).toBe('node_modules/@react-navigation/core/index.js');
+  });
+});

@@ -13,8 +13,9 @@ import type { BunPlugin } from 'bun';
 
 import { assetModuleSource, getAssetData, type AssetData } from './assets';
 import { expoHelpers } from './expo-helpers';
+import { transformCss } from './web';
 import { ASSET_REGISTRY_VIRTUAL } from './resolver';
-import { ASSET_REGISTRY_SRC, createProject, metafileOrder, requireContextSource } from './shared';
+import { ASSET_REGISTRY_SRC, MISSING_MODULE_NAMESPACE, createProject, metafileOrder, missingModuleSource, requireContextSource } from './shared';
 import { REQUIRE_CONTEXT_PREFIX } from './transform-worker';
 
 export { ASSET_EXTS, SOURCE_EXTS } from './shared';
@@ -22,7 +23,7 @@ export { ASSET_EXTS, SOURCE_EXTS } from './shared';
 export interface BundleOptions {
   projectRoot: string;
   entryFile: string;
-  platform: 'ios' | 'android';
+  platform: 'ios' | 'android' | 'tvos' | 'macos';
   dev: boolean;
   minify: boolean;
   bundleOutput: string;
@@ -38,6 +39,8 @@ export interface BundleOptions {
 
 export interface BundleResult {
   modules: string[];
+  /** file URLs of `"use dom"` components (their web bundles are exported by ./dom.ts) */
+  domComponents: string[];
   assets: AssetData[];
   timings: Record<string, number>;
 }
@@ -54,6 +57,8 @@ export async function bundle(opts: BundleOptions): Promise<BundleResult> {
   const entry = path.resolve(projectRoot, opts.entryFile);
 
   const modules = new Set<string>();
+  const domComponents = new Set<string>();
+  const optionalByFile = new Map<string, Set<string>>();
   const assetByPath = new Map<string, AssetData>();
   // Bun does not carry `pluginData` from onResolve to onLoad: keep per-path data here.
   const assetFilesByPath = new Map<string, string[]>();
@@ -83,7 +88,14 @@ export async function bundle(opts: BundleOptions): Promise<BundleResult> {
         }
         const importer = args.importer && args.namespace === 'file' ? args.importer : projectPkg;
         const isESM = args.kind === 'import-statement' || args.kind === 'dynamic-import';
-        const r = resolver.resolve(args.path, importer, isESM);
+        let r;
+        try {
+          r = resolver.resolve(args.path, importer, isESM);
+        } catch (e) {
+          // Metro allowOptionalDependencies: unresolved requires inside try blocks throw only when they run
+          if (!optionalByFile.get(importer)?.has(args.path)) throw e;
+          return { path: args.path, namespace: MISSING_MODULE_NAMESPACE };
+        }
         if (r.type === 'empty') return { path: `empty:${args.path}`, namespace: 'rn-empty' };
         if (r.type === 'assetFiles') {
           assetFilesByPath.set(r.filePaths[0], r.filePaths);
@@ -101,6 +113,7 @@ export async function bundle(opts: BundleOptions): Promise<BundleResult> {
         throw new Error(`Unknown virtual module ${args.path}`);
       });
 
+      build.onLoad({ filter: /.*/, namespace: MISSING_MODULE_NAMESPACE }, (args) => ({ contents: missingModuleSource(args.path), loader: 'js' }));
       build.onLoad({ filter: /.*/, namespace: 'rn-empty' }, () => ({ contents: 'module.exports = {};', loader: 'js' })); // CommonJS like Metro's empty module: named imports are undefined
 
       build.onLoad({ filter: /.*/, namespace: 'rn-asset' }, (args) => {
@@ -120,8 +133,10 @@ export async function bundle(opts: BundleOptions): Promise<BundleResult> {
         modules.add(file);
         const ext = path.extname(file).slice(1);
         if (ext === 'json') return { contents: fs.readFileSync(file, 'utf8'), loader: 'json' };
-        if (ext === 'css' || ext === 'scss' || ext === 'sass') return { contents: '', loader: 'js' }; // native: no CSS
-        const { code, map } = await transformModule(file);
+        if (ext === 'css' || ext === 'scss' || ext === 'sass') return { contents: (await transformCss(project, file)).js, loader: 'js' }; // native: Expo's empty CSS module
+        const { code, map, domComponentReference, optionalDeps } = await transformModule(file);
+        if (optionalDeps?.length) optionalByFile.set(file, new Set(optionalDeps));
+        if (domComponentReference) domComponents.add(domComponentReference);
         const stubs = missingExports.get(file);
         const stubCode = stubs ? '\n' + [...stubs].map((n) => `export var ${n} = void 0;`).join('\n') : '';
         if (map) babelMaps.set(file, map);
@@ -218,5 +233,5 @@ export async function bundle(opts: BundleOptions): Promise<BundleResult> {
 
   timings.total = performance.now() - t0;
   timings.cacheHits = project.stats.cacheHits;
-  return { modules: [...modules], assets, timings };
+  return { modules: [...modules], assets, timings, domComponents: [...domComponents] };
 }

@@ -12,6 +12,7 @@
 //                   --web opens the app in the browser
 //
 // Escape hatch: RN_BUNDLER=metro runs the same command with Metro (`@expo/cli`).
+import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 
@@ -52,7 +53,7 @@ function runMetro(): never {
 
 async function runExportEmbed(args: Record<string, string>) {
   const projectRoot = path.resolve(args['project-root'] ?? process.cwd());
-  const platform = (args.platform ?? 'ios') as 'ios' | 'android';
+  const platform = (args.platform ?? 'ios') as 'ios' | 'android' | 'tvos' | 'macos';
   const dev = args.dev === 'true';
   // RN's scripts pass --minify false for Hermes release builds; otherwise minify when !dev (Metro default).
   const minify = args.minify !== undefined ? args.minify === 'true' : !dev;
@@ -72,8 +73,18 @@ async function runExportEmbed(args: Record<string, string>) {
     resetCache: args['reset-cache'] === 'true' && process.env.BUN_BUNDLER_HONOR_RESET_CACHE === '1',
     log: (m) => console.log(m),
   });
+  // DOM components: www.bundle/<md5>.html + web bundles next to the native assets (Expo exportEmbedAsync)
+  const { persistDomComponentsForEmbed } = await import('./dom');
+  const dom = await persistDomComponentsForEmbed({
+    projectRoot,
+    references: result.domComponents,
+    dev,
+    platform,
+    bundleOutput,
+    assetsDest: args['assets-dest'] ? path.resolve(args['assets-dest']) : undefined,
+  });
   const ms = Math.round(performance.now() - started);
-  console.log(`${platform === 'ios' ? 'iOS' : 'Android'} Bundled ${ms}ms with Bun (${result.modules.length} files)`);
+  console.log(`${{ ios: 'iOS', android: 'Android', tvos: 'tvOS', macos: 'macOS' }[platform]} Bundled ${ms}ms with Bun (${result.modules.length} files${dom ? `, ${dom} DOM components` : ''})`);
   console.log(`Writing bundle output to: ${bundleOutput}`);
   if (process.env.BUN_BUNDLER_TIMINGS) console.log(JSON.stringify(result.timings));
 }
@@ -81,6 +92,8 @@ async function runExportEmbed(args: Record<string, string>) {
 if (process.env.RN_BUNDLER === 'metro') runMetro();
 
 const { args, positional, platforms } = parseArgs(process.argv.slice(2));
+// real path: module paths from the resolver are real paths (e.g. /tmp -> /private/tmp on macOS)
+args['project-root'] = fs.realpathSync(path.resolve(args['project-root'] ?? process.cwd()));
 const command = positional[0] ?? 'export:embed';
 
 try {
@@ -107,7 +120,7 @@ try {
       '--dump-assetmap': flag('dump-assetmap'),
       '--source-maps': args['source-maps'] ?? args['dump-sourcemap'],
     });
-    const unsupported = options.platforms.filter((p: string) => !['ios', 'android', 'web'].includes(p));
+    const unsupported = options.platforms.filter((p: string) => !['ios', 'android', 'web', 'tvos', 'macos'].includes(p));
     if (unsupported.length) throw new Error(`export: platform ${unsupported.join(', ')} is not supported by the Bun bundler`);
     const { exportAppAsync } = await import('./export');
     await exportAppAsync({ projectRoot, ...options, log: (m: string) => console.log(m) });

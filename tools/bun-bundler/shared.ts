@@ -13,13 +13,17 @@ export const ASSET_EXTS = ['bmp', 'gif', 'jpg', 'jpeg', 'png', 'psd', 'svg', 'we
 
 export const EXTERNAL_REQUIRE_POLYFILL = '\0polyfill:external-require';
 export const ENV_VARS_POLYFILL = '\0polyfill:environment-variables';
+/** an optional dependency that does not resolve: throws when required, like Metro's unresolved optional deps */
+export const MISSING_MODULE_NAMESPACE = 'rn-missing';
+export const missingModuleSource = (spec: string) =>
+  `var e = new Error(${JSON.stringify(`Cannot find module '${spec}'`)}); e.code = 'MODULE_NOT_FOUND'; throw e;`;
 export const ASSET_REGISTRY_SRC = `const assets=[];module.exports={registerAsset:s=>assets.push(s),getAssetByID:s=>assets[s-1]};`;
 export const SCRIPT_WRAPPER_GLOBAL = `typeof globalThis !== 'undefined' ? globalThis : typeof global !== 'undefined' ? global : typeof window !== 'undefined' ? window : this`;
 const EXTERNAL_REQUIRE_WEB_SRC = `global.$$require_external = typeof require !== "undefined" ? (m) => require(m) : () => null;`;
 const EXTERNAL_REQUIRE_SRC =
   'try { global.$$require_external = typeof expo === "undefined" ? require : (moduleId) => { throw new Error(`Node.js standard library module ${moduleId} is not available in this JavaScript environment`);} } catch { global.$$require_external = (moduleId) => { throw new Error(`Node.js standard library module ${moduleId} is not available in this JavaScript environment`);} }';
 
-const BUNDLER_CACHE_VERSION = 2; // bump when the transform pipeline changes
+const BUNDLER_CACHE_VERSION = 7; // bump when the transform pipeline changes
 
 // ---------------------------------------------------------------- Babel worker pool
 
@@ -95,7 +99,7 @@ export class TransformPool {
 
 // ---------------------------------------------------------------- project context
 
-export type Platform = 'ios' | 'android' | 'web';
+export type Platform = 'ios' | 'android' | 'web' | 'tvos' | 'macos';
 
 export interface ProjectOptions {
   projectRoot: string;
@@ -108,6 +112,12 @@ export interface ProjectOptions {
   exp?: any;
   workers?: number;
   resetCache?: boolean;
+  /** minified export (passed to the transformer like Metro's `minify`; default: production) */
+  minify?: boolean;
+  /** expo-router loader bundle: only the route's `loader` export is kept (`isLoaderBundle`) */
+  loaderBundle?: boolean;
+  /** DOM component bundle: the `"use dom"` file (relative import from expo/dom/entry.js, URI-encoded) */
+  dom?: string;
 }
 
 export type TransformFormat = 'esm' | 'metro';
@@ -137,6 +147,12 @@ export function getRouterRoot(projectRoot: string, exp = getExpoConfig(projectRo
   return req('@expo/cli/build/src/start/server/metro/router').getRouterDirectoryModuleIdWithManifest(projectRoot, exp);
 }
 
+/** expo-router `asyncRoutes` for a mode and platform (Expo CLI getAsyncRoutesFromExpoConfig). */
+export function getAsyncRoutes(projectRoot: string, exp: any, mode: string, platform: string): boolean {
+  const req = createRequire(path.join(projectRoot, 'package.json'));
+  return req('@expo/cli/build/src/start/server/middleware/metroOptions').getAsyncRoutesFromExpoConfig(exp, mode, platform);
+}
+
 /** `experiments.baseUrl` without trailing slashes ('' when unset), from Expo CLI. */
 export function getBaseUrl(projectRoot: string, exp = getExpoConfig(projectRoot)): string {
   const req = createRequire(path.join(projectRoot, 'package.json'));
@@ -149,12 +165,27 @@ export function getBaseUrl(projectRoot: string, exp = getExpoConfig(projectRoot)
  * Plugin namespaces (`rn-asset:/abs/path`) are stripped; relative keys are resolved against the cwd.
  */
 export function metafileOrder(metafile: any, entry: string): { pre: string[]; post: string[] } {
+  // keys are relative to Bun's working directory; compare real paths (the resolver returns real paths)
+  const real = new Map<string, string>();
   const norm = (p: string) => {
     const bare = p.replace(/^[a-z][a-z-]*:(?=[/\0])/, '');
-    return bare.startsWith('\0') || path.isAbsolute(bare) ? bare : path.resolve(bare);
+    if (bare.startsWith('\0')) return bare;
+    const abs = path.isAbsolute(bare) ? bare : path.resolve(bare);
+    let r = real.get(abs);
+    if (r === undefined) {
+      try {
+        r = fs.realpathSync(abs);
+      } catch {
+        r = abs;
+      }
+      real.set(abs, r);
+    }
+    return r;
   };
+  // with code splitting, `import()` edges point at output chunks; `entryPoint` is the imported source module
+  const target = (i: any) => norm(i.entryPoint ?? i.path);
   const graph = new Map<string, string[]>();
-  for (const [k, v] of Object.entries<any>(metafile?.inputs ?? {})) graph.set(norm(k), (v.imports ?? []).map((i: any) => norm(i.path)));
+  for (const [k, v] of Object.entries<any>(metafile?.inputs ?? {})) graph.set(norm(k), (v.imports ?? []).map(target));
   const pre: string[] = [];
   const post: string[] = [];
   const seen = new Set<string>();
@@ -242,6 +273,43 @@ export function requireContextSource(projectRoot: string, spec: ContextSpec) {
   return contextModuleSource(spec, files, (i) => `${lazy ? 'import' : 'require'}(${JSON.stringify(path.join(spec.dir, files[i]))})`);
 }
 
+/** @expo/config PLATFORM_EXTENSIONS (out-of-tree platforms resolve through their host platform's files) */
+const OUT_OF_TREE_PLATFORM_EXTENSIONS: Record<string, string[]> = { tvos: ['tvos', 'ios', 'native'], macos: ['macos', 'ios', 'native'] };
+
+/** Expo getNodejsExtensions: server bundles sort `*.mjs` after the `*.js`-like extensions */
+function nodejsSourceExts(exts: string[]) {
+  const mjs = exts.filter((e) => /mjs$/.test(e));
+  const rest = exts.filter((e) => !/mjs$/.test(e));
+  const jsIndex = rest.reduce((index, e, i) => (/jsx?$/.test(e) ? i : index), -1);
+  rest.splice(jsIndex + 1, 0, ...mjs);
+  return rest;
+}
+
+/**
+ * Expo autolinking module resolution input (createAutolinkingModuleResolverInput), enabled like Expo CLI: in a
+ * monorepo, for out-of-tree platforms (tvOS/macOS) or with `experiments.autolinkingModuleResolution`. Computed in a
+ * child process (the scan is async) and cached per project/platform.
+ */
+const autolinkingCache = new Map<string, any>();
+function autolinkingInput(projectRoot: string, exp: any, platform: string) {
+  const req = createRequire(path.join(projectRoot, 'package.json'));
+  const isWorkspace = req('@expo/config/paths').getMetroServerRoot(projectRoot) !== projectRoot;
+  const configPlatforms: string[] = req('@expo/config').getPlatformsFromConfig?.(projectRoot, exp) ?? exp.platforms ?? [];
+  const outOfTree = configPlatforms.some((p) => p === 'tvos' || p === 'macos');
+  const enabled = exp.experiments?.autolinkingModuleResolution ?? (isWorkspace || outOfTree);
+  if (!enabled || platform === 'web') return null;
+  const key = `${projectRoot}\0${platform}`;
+  if (!autolinkingCache.has(key)) {
+    const modulePath = req.resolve('@expo/cli/build/src/start/server/metro/createExpoAutolinkingResolver');
+    const script = `require(${JSON.stringify(modulePath)}).createAutolinkingModuleResolverInput({ platforms: [${JSON.stringify(platform)}], projectRoot: ${JSON.stringify(projectRoot)} }).then((r) => { for (const v of Object.values(r)) v.moduleTestRe = v.moduleTestRe.source; process.stdout.write(JSON.stringify(r)); })`;
+    const out = Bun.spawnSync([process.execPath, '-e', script], { cwd: projectRoot, stdout: 'pipe', stderr: 'inherit' });
+    const parsed = JSON.parse(out.stdout.toString() || '{}');
+    for (const v of Object.values<any>(parsed)) v.moduleTestRe = new RegExp(v.moduleTestRe);
+    autolinkingCache.set(key, parsed);
+  }
+  return autolinkingCache.get(key);
+}
+
 export function createProject(opts: ProjectOptions) {
   const { projectRoot, platform, dev } = opts;
   const projectRequire = createRequire(path.join(projectRoot, 'package.json'));
@@ -256,15 +324,27 @@ export function createProject(opts: ProjectOptions) {
     routerRoot,
     reactCompiler: String(!!exp.experiments?.reactCompiler),
     baseUrl,
+    // expo-router `asyncRoutes` (Expo CLI getAsyncRoutesFromExpoConfig); server bundles never split
+    ...(!isServer && getAsyncRoutes(projectRoot, exp, dev ? 'development' : 'production', platform) ? { asyncRoutes: 'true' } : {}),
+    ...(opts.loaderBundle ? { isLoaderBundle: 'true' } : {}),
+    ...(opts.dom ? { dom: opts.dom } : {}),
   };
+  const minify = opts.minify ?? !dev;
   let shimsDir: string | null = null;
   try {
     shimsDir = isWeb ? path.join(path.dirname(projectRequire.resolve('@expo/cli/package.json')), 'static', 'shims') : null;
   } catch {}
+  const reactNativeHostPackage: string =
+    isWeb ? 'react-native-web' : projectRequire('expo/internal/unstable-autolinking-exports').getSupportPackageForPlatform(platform) ?? 'react-native';
   const resolver = new Resolver({
     projectRoot,
     platform,
-    sourceExts: SOURCE_EXTS,
+    sourceExts: isServer ? nodejsSourceExts(SOURCE_EXTS) : SOURCE_EXTS,
+    dev,
+    server: isServer,
+    reactNativeHostPackage,
+    platformExtensions: OUT_OF_TREE_PLATFORM_EXTENSIONS[platform],
+    autolinking: autolinkingInput(projectRoot, exp, platform),
     assetExts: ASSET_EXTS,
     tsconfigPaths: readTsconfigPaths(projectRoot),
     virtualModules: { [EXTERNAL_REQUIRE_POLYFILL]: '', [ENV_VARS_POLYFILL]: '' },
@@ -310,6 +390,7 @@ export function createProject(opts: ProjectOptions) {
   const cacheSalt = JSON.stringify({
     v: BUNDLER_CACHE_VERSION,
     customTransformOptions,
+    minify,
     preset: projectRequire('babel-preset-expo/package.json').version,
     metroConfig: projectRequire('@expo/metro-config/package.json').version,
     env: Object.entries(process.env).filter(([k]) => k.startsWith('EXPO_PUBLIC_')).sort(),
@@ -327,15 +408,19 @@ export function createProject(opts: ProjectOptions) {
         return (await cached.json()) as TransformResponse;
       }
     }
-    const res = await pool.run({ filename, src: source, projectRoot, platform, dev, type, format, customTransformOptions });
+    const res = await pool.run({ filename, src: source, projectRoot, platform, dev, minify, type, format, customTransformOptions });
     if (res.error) throw new Error(res.error);
     stats.transformed++;
-    await Bun.write(cacheFile, JSON.stringify({ code: res.code, map: res.map, deps: res.deps, esmDeps: res.esmDeps }));
+    await Bun.write(cacheFile, JSON.stringify({ code: res.code, map: res.map, deps: res.deps, esmDeps: res.esmDeps, asyncDeps: res.asyncDeps, loaderReference: res.loaderReference, domComponentReference: res.domComponentReference, optionalDeps: res.optionalDeps }));
     return res;
   }
 
-  /** Metro-compatible prelude (globals the React Native runtime expects before any module runs). */
+  /**
+   * Metro-compatible prelude (globals the React Native runtime expects before any module runs). Server bundles
+   * keep the real `process` (Expo's serverPreludeSerializerPlugin strips the polyfill there).
+   */
   function prelude(extra = '') {
+    if (isServer) return `var __BUNDLE_START_TIME__=globalThis.nativePerformanceNow?nativePerformanceNow():Date.now(),__DEV__=${dev},__METRO_GLOBAL_PREFIX__='';` + extra;
     return (
       `var __BUNDLE_START_TIME__=globalThis.nativePerformanceNow?nativePerformanceNow():Date.now(),__DEV__=${dev},` +
       `process=globalThis.process||{},__METRO_GLOBAL_PREFIX__='';process.env=process.env||{};` +
@@ -350,7 +435,8 @@ export function createProject(opts: ProjectOptions) {
     for (const f of polyfillFiles) {
       let code: string;
       if (f === EXTERNAL_REQUIRE_POLYFILL) code = isWeb ? EXTERNAL_REQUIRE_WEB_SRC : EXTERNAL_REQUIRE_SRC;
-      else if (f === ENV_VARS_POLYFILL) code = '//';
+      // Expo environmentVariableSerializerPlugin: EXPO_PUBLIC_* on process.env in client dev bundles (production inlines)
+      else if (f === ENV_VARS_POLYFILL) code = dev && !isServer ? projectRequire('@expo/metro-config/build/serializer/environmentVariableSerializerPlugin').getEnvVarDevString() : '//';
       else code = (await transform(f, 'script', 'esm')).code ?? '';
       out.push(`(function (global) {\n${code}\n})(${SCRIPT_WRAPPER_GLOBAL});`);
     }
@@ -361,6 +447,7 @@ export function createProject(opts: ProjectOptions) {
     projectRoot,
     platform,
     dev,
+    minify,
     exp,
     routerRoot,
     baseUrl,
