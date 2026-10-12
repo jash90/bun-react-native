@@ -14,6 +14,7 @@ Expo SDK 57.0.27 · React Native 0.86.3 · Metro 0.84.5 · Hermes · Bun 1.4.3 �
 | [RUNBOOK.md](RUNBOOK.md) | Krok po kroku: instalacja, pliki konfiguracyjne, shim `node`, skrypty, buildy natywne, CI, EAS, weryfikacja, wycofanie |
 | [KNOWN-ISSUES.md](KNOWN-ISSUES.md) | Wszystkie znane bugi (Bun/Expo/RN/Jest) z linkami, statusem, obejściem, testem i warunkiem usunięcia obejścia |
 | [VERIFICATION.md](VERIFICATION.md) | Dowody: przebieg e2e bez Node, porównania bajt-w-bajt z Node, pomiary czasów, lista miejsc wołających `node` |
+| [HISTORY.md](HISTORY.md) | Jak do tego doszliśmy: etapy, konkretne kroki, błędy z przyczynami i commity |
 | [CI-EAS.md](CI-EAS.md) | GitHub Actions i EAS Build: co działa, co niezweryfikowane |
 | Pliki w repo | [`bunfig.toml`](../../bunfig.toml), [`tools/bun/node-compat.preload.js`](../../tools/bun/node-compat.preload.js), [`tools/bun/jest.preload.js`](../../tools/bun/jest.preload.js), [`metro.config.js`](../../metro.config.js), [`tools/bin/node`](../../tools/bin/node), [`plugins/with-bun-xcode-env.js`](../../plugins/with-bun-xcode-env.js), [`.github/workflows/mobile-bun.yml`](../../.github/workflows/mobile-bun.yml), [`eas.json`](../../eas.json) |
 | [sources/bun/](sources/bun/INDEX.md) | Lokalna kopia oficjalnej dokumentacji Buna (oven-sh/bun@`c39c718`, 2026-10-12) + posty z bloga 1.3–1.4.3 |

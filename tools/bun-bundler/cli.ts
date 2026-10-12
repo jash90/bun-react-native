@@ -118,6 +118,7 @@ try {
       '--no-bytecode': flag('no-bytecode'),
       '--no-ssg': flag('no-ssg'),
       '--dump-assetmap': flag('dump-assetmap'),
+      '--unstable-hosted-native': flag('unstable-hosted-native'),
       '--source-maps': args['source-maps'] ?? args['dump-sourcemap'],
     });
     const unsupported = options.platforms.filter((p: string) => !['ios', 'android', 'web', 'tvos', 'macos'].includes(p));

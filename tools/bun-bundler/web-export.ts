@@ -127,7 +127,8 @@ export async function importServerBundle(projectRoot: string, code: string, name
 /** CommonJS module for expo-server (API route, middleware, SSR render module) + its source map. */
 export async function buildServerFunction(project: Project, file: string, opts: { minify: boolean }) {
   const build = await buildWeb(project, [file], { kind: 'function', minify: opts.minify, sourcemap: true });
-  return { src: `${project.prelude()}\n${build.code}`, map: build.map ? { ...build.map, mappings: ';' + build.map.mappings } : null };
+  // the module file is strict like Metro's ES modules (the directive must open the file)
+  return { src: `"use strict";\n${project.prelude()}\n${build.code}`, map: build.map ? { ...build.map, mappings: ';;' + build.map.mappings } : null };
 }
 
 /** Same layout as Expo CLI's exportServerRouteAsync: `name.js` + `name.js.map` in the server domain. */

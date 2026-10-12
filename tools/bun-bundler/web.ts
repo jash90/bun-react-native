@@ -14,7 +14,7 @@ import type { BunPlugin } from 'bun';
 
 import { getAssetData, type AssetData } from './assets';
 import { ASSET_REGISTRY_VIRTUAL } from './resolver';
-import { ASSET_REGISTRY_SRC, MISSING_MODULE_NAMESPACE, metafileOrder, missingModuleSource, requireContextSource, type Project } from './shared';
+import { ASSET_REGISTRY_SRC, MISSING_MODULE_NAMESPACE, metafileOrder, missingModuleSource, requireContextSource, strictIife, type Project } from './shared';
 import { REQUIRE_CONTEXT_PREFIX } from './transform-worker';
 
 export const md5 = (data: string | Uint8Array) => new Bun.CryptoHasher('md5').update(data).digest('hex');
@@ -272,12 +272,15 @@ export async function buildWeb(project: Project, entries: string[], opts: WebBui
     if (!added) break;
   }
   if (!result.success) throw new Error(`Bun.build (web ${opts.kind}) failed:\n${result.logs.map(String).join('\n')}`);
-  const code = (await result.outputs.find((o: any) => o.kind === 'entry-point').text()).replace(/\n?\/\/# (sourceMappingURL|debugId)=.*$/gm, '');
+  let code = (await result.outputs.find((o: any) => o.kind === 'entry-point').text()).replace(/\n?\/\/# (sourceMappingURL|debugId)=.*$/gm, '');
 
   let map: any = null;
+  // ES modules run in strict mode, like in Metro (an IIFE hoists them into one non-strict function)
+  if (opts.kind === 'client' && !split && !opts.sourcemap) code = strictIife(code, null, project.projectRequire).code;
   if (opts.sourcemap) {
     const smOut = result.outputs.find((o: any) => o.kind === 'sourcemap');
-    const bunMap = smOut ? JSON.parse(await smOut.text()) : { version: 3, sources: [], names: [], mappings: '' };
+    let bunMap = smOut ? JSON.parse(await smOut.text()) : { version: 3, sources: [], names: [], mappings: '' };
+    if (opts.kind === 'client' && !split) ({ code, map: bunMap } = strictIife(code, bunMap, project.projectRequire));
     map = composeBabelMaps(project, bunMap, babelMaps);
   }
 

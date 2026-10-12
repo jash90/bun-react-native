@@ -29,6 +29,10 @@ export interface ExportOptions {
   minify: boolean;
   bytecode: boolean;
   sourceMaps: boolean;
+  /** `--source-maps inline`: maps embedded in the JS (none for Hermes bytecode), no .map files */
+  inlineSourceMaps?: boolean;
+  /** `--unstable-hosted-native`: native assets hosted like web assets, bundles in the client domain */
+  hostedNative?: boolean;
   dumpAssetmap: boolean;
   skipSSG: boolean;
   log: (msg: string) => void;
@@ -51,6 +55,7 @@ async function exportNativeBundle(opts: ExportOptions, platform: Exclude<ExportP
       minify: opts.minify,
       bundleOutput: jsFile,
       sourcemapOutput: mapFile,
+      hostedAssets: opts.hostedNative,
       log: opts.log,
     });
     let code = fs.readFileSync(jsFile, 'utf8');
@@ -62,15 +67,19 @@ async function exportNativeBundle(opts: ExportOptions, platform: Exclude<ExportP
     // Expo compiles bytecode for production Hermes exports only (MetroBundlerDevServer isHermesEnabled: !dev)
     const hermes = opts.bytecode && !opts.dev && h.isEnableHermesManaged(exp, platform);
     let fileName: string;
+    const targetDomain = opts.hostedNative ? ('client' as const) : undefined;
+    const inline = !!opts.inlineSourceMaps;
     if (hermes) {
-      const out = await h.buildHermesBundleAsync({ projectRoot, filename: entry, code, map, minify: true });
+      // inline maps cannot live in bytecode: Expo compiles without a map then
+      const out = await h.buildHermesBundleAsync({ projectRoot, filename: entry, code, map: inline ? null : map, minify: true });
       fileName = `${base}.hbc`;
-      files.set(fileName, { contents: out.hbc, originFilename: entry });
-      if (map && out.sourcemap) files.set(`${fileName}.map`, { contents: out.sourcemap, originFilename: entry });
+      files.set(fileName, { contents: out.hbc, originFilename: entry, targetDomain });
+      if (map && !inline && out.sourcemap) files.set(`${fileName}.map`, { contents: out.sourcemap, originFilename: entry, targetDomain });
     } else {
       fileName = `${base}.js`;
-      files.set(fileName, { contents: map ? `${code}\n//# sourceMappingURL=${path.basename(fileName)}.map` : code, originFilename: entry });
-      if (map) files.set(`${fileName}.map`, { contents: map, originFilename: entry });
+      const comment = !map ? '' : inline ? `\n//# sourceMappingURL=data:application/json;charset=utf-8;base64,${Buffer.from(map).toString('base64')}` : `\n//# sourceMappingURL=${path.basename(fileName)}.map`;
+      files.set(fileName, { contents: code + comment, originFilename: entry, targetDomain });
+      if (map && !inline) files.set(`${fileName}.map`, { contents: map, originFilename: entry, targetDomain });
     }
     opts.log(`${{ ios: 'iOS', android: 'Android', tvos: 'tvOS', macos: 'macOS' }[platform]} Bundled with Bun (${result.modules.length} files) -> ${fileName}`);
     return { fileName, assets: result.assets, domMetadata: dom.flatMap((d) => d.metadata) };
@@ -113,7 +122,7 @@ export async function exportAppAsync(opts: ExportOptions) {
       fileNames[platform] = [r.fileName];
       if (r.domMetadata.length) domComponentAssetsMetadata[platform] = r.domMetadata;
     }
-    const { assets, embeddedHashSet } = await h.exportAssetsAsync(projectRoot, { files, exp, outputDir, bundles, baseUrl });
+    const { assets, embeddedHashSet } = await h.exportAssetsAsync(projectRoot, { files, exp, outputDir, bundles, baseUrl, hostedNative: opts.hostedNative });
     if (opts.dumpAssetmap) files.set('assetmap.json', { contents: JSON.stringify(h.createAssetMap({ assets })) });
     files.set('metadata.json', { contents: JSON.stringify(h.createMetadataJson({ bundles, fileNames, embeddedHashSet, domComponentAssetsMetadata })) });
   }
@@ -128,6 +137,7 @@ export async function exportAppAsync(opts: ExportOptions) {
       baseUrl,
       dev: opts.dev,
       minify: opts.minify,
+      // like Expo: web ignores `inline` (external maps whenever --source-maps is set)
       sourceMaps: opts.sourceMaps,
       skipSSG: opts.skipSSG,
       log: opts.log,

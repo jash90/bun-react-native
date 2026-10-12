@@ -15,7 +15,7 @@ import { assetModuleSource, getAssetData, type AssetData } from './assets';
 import { expoHelpers } from './expo-helpers';
 import { transformCss } from './web';
 import { ASSET_REGISTRY_VIRTUAL } from './resolver';
-import { ASSET_REGISTRY_SRC, MISSING_MODULE_NAMESPACE, createProject, metafileOrder, missingModuleSource, requireContextSource } from './shared';
+import { ASSET_REGISTRY_SRC, MISSING_MODULE_NAMESPACE, createProject, metafileOrder, missingModuleSource, requireContextSource, strictIife } from './shared';
 import { REQUIRE_CONTEXT_PREFIX } from './transform-worker';
 
 export { ASSET_EXTS, SOURCE_EXTS } from './shared';
@@ -29,6 +29,8 @@ export interface BundleOptions {
   bundleOutput: string;
   sourcemapOutput?: string;
   assetsDest?: string;
+  /** `expo export --unstable-hosted-native`: assets named `name.<md5>` and served like web assets */
+  hostedAssets?: boolean;
   /** iOS: put images into an asset catalog (`--asset-catalog-dest`, like expo export:embed) */
   assetCatalogDest?: string;
   routerRoot?: string;
@@ -46,6 +48,7 @@ export interface BundleResult {
 }
 
 const ENTRY_ID = '\0bun-rn:entry';
+const md5hex = (s: string) => new Bun.CryptoHasher('md5').update(s).digest('hex');
 
 export async function bundle(opts: BundleOptions): Promise<BundleResult> {
   const t0 = performance.now();
@@ -117,7 +120,9 @@ export async function bundle(opts: BundleOptions): Promise<BundleResult> {
       build.onLoad({ filter: /.*/, namespace: 'rn-empty' }, () => ({ contents: 'module.exports = {};', loader: 'js' })); // CommonJS like Metro's empty module: named imports are undefined
 
       build.onLoad({ filter: /.*/, namespace: 'rn-asset' }, (args) => {
-        const data = getAssetData(assetFilesByPath.get(args.path)!, projectRoot, '/assets', platform);
+        let data = getAssetData(assetFilesByPath.get(args.path)!, projectRoot, '/assets', platform);
+        // hosted assets carry their content hash in the name (@expo/metro-config getUniversalAssetData, isHosted)
+        if (opts.hostedAssets) data = { ...data, name: `${data.name}.${data.fileHashes.length === 1 ? data.fileHashes[0] : md5hex(data.fileHashes.join(''))}` };
         assetByPath.set(args.path, data);
         for (const f of data.files) modules.add(f);
         return { contents: assetModuleSource(data, '@react-native/assets-registry/registry'), loader: 'js' };
@@ -193,7 +198,14 @@ export async function bundle(opts: BundleOptions): Promise<BundleResult> {
   // assets in Metro's graph order (depth-first from the entry, imports in source order), deterministic
   const assets = metafileOrder(result.metafile, ENTRY_ID).pre.filter((p) => assetByPath.has(p)).map((p) => assetByPath.get(p)!);
   const jsOut = result.outputs.find((o: any) => o.kind === 'entry-point')!;
-  const mainCode = (await jsOut.text()).replace(/\n?\/\/# (sourceMappingURL|debugId)=.*$/gm, '');
+  const smOut = opts.sourcemapOutput ? result.outputs.find((o: any) => o.kind === 'sourcemap') : null;
+  // ES modules run in strict mode, like in Metro (Bun hoists them into one non-strict function)
+  const strict = strictIife(
+    (await jsOut.text()).replace(/\n?\/\/# (sourceMappingURL|debugId)=.*$/gm, ''),
+    smOut ? JSON.parse(await smOut.text()) : null,
+    projectRequire
+  );
+  const mainCode = strict.code;
 
   // ---- prelude + polyfills + module graph
   // Dev bundles from Bun.build have no Metro module runtime: inert React Refresh globals and `require`.
@@ -206,8 +218,7 @@ export async function bundle(opts: BundleOptions): Promise<BundleResult> {
   fs.writeFileSync(opts.bundleOutput, head + mainCode + '\n');
 
   if (opts.sourcemapOutput) {
-    const smOut = result.outputs.find((o: any) => o.kind === 'sourcemap');
-    const bunMap = smOut ? JSON.parse(await smOut.text()) : { version: 3, sources: [], names: [], mappings: '' };
+    const bunMap = strict.map ?? { version: 3, sources: [], names: [], mappings: '' };
     // bundle -> Babel output (Bun) composed with Babel output -> original source (per file). Only Bun's
     // (project-relative) sources get a Babel map; Babel maps point at absolute originals, ending the chain.
     const remapping = projectRequire('@jridgewell/remapping');

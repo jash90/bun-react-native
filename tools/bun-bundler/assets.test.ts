@@ -6,7 +6,9 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { assetModuleSource, getAssetData, getAssetRecord } from './assets';
-import { contextModuleSource, listContextFiles, metafileOrder } from './shared';
+import { createRequire } from 'node:module';
+
+import { contextModuleSource, listContextFiles, metafileOrder, strictIife } from './shared';
 
 let root: string;
 const write = (rel: string, content: string | Uint8Array = '') => {
@@ -114,4 +116,19 @@ test('metafile order: depth-first in import order (pre = graph order, post = CSS
   const { pre, post } = metafileOrder(metafile, '\0entry');
   expect(pre).toEqual(['\0entry', '/p/a.js', '/p/b.css', '/p/c.js', '/p/img.png']);
   expect(post).toEqual(['/p/b.css', '/p/c.js', '/p/a.js', '/p/img.png', '\0entry']);
+});
+
+test('strictIife: "use strict" opens the IIFE (Metro: every ES module is strict) and the map keeps its positions', () => {
+  const req = createRequire(path.join(process.cwd(), 'package.json'));
+  const { decode, encode } = req('@jridgewell/sourcemap-codec');
+  // first line: segments at columns 0 and 12, second line untouched
+  const map = { version: 3, sources: ['a.js'], names: [], mappings: encode([[[0, 0, 0, 0], [12, 0, 0, 4]], [[2, 0, 1, 0]]]) };
+  const out = strictIife('(() => {var x=1;\n  x++;})();', map, req);
+  expect(out.code).toBe('(() => {"use strict";var x=1;\n  x++;})();');
+  // the bundle really runs strict: an assignment to an undeclared variable throws
+  expect(() => new Function(strictIife('(() => {undeclaredGlobal = 1;})();', null, req).code)()).toThrow(ReferenceError);
+  const directive = '"use strict";'.length;
+  expect(decode(out.map.mappings)).toEqual([[[0, 0, 0, 0], [12 + directive, 0, 0, 4]], [[2, 0, 1, 0]]]);
+  // not an IIFE (e.g. ESM output): unchanged
+  expect(strictIife('export {};', null, req).code).toBe('export {};');
 });

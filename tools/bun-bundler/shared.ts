@@ -200,6 +200,25 @@ export function metafileOrder(metafile: any, entry: string): { pre: string[]; po
   return { pre, post };
 }
 
+/**
+ * Strict mode for an IIFE bundle (`(() => { ... })()`): Metro runs every ES module in strict mode (`"use strict"`
+ * per module, @expo/metro-config applyUseStrictDirective) and the dev graph does too (Babel's CommonJS transform);
+ * Bun hoists ES modules into one function without it. The directive goes first in that function; generated columns
+ * of the first line shift in the (Bun) source map.
+ */
+export function strictIife(code: string, map: any | null, projectRequire: NodeRequire): { code: string; map: any | null } {
+  const m = code.match(/^\(\(\)\s*=>\s*\{/);
+  if (!m) return { code, map };
+  const directive = '"use strict";';
+  const at = m[0].length;
+  const out = code.slice(0, at) + directive + code.slice(at);
+  if (!map?.mappings) return { code: out, map };
+  const { decode, encode } = projectRequire('@jridgewell/sourcemap-codec');
+  const lines = decode(map.mappings);
+  if (lines[0]) lines[0] = lines[0].map((seg: number[]) => (seg[0] >= at ? [seg[0] + directive.length, ...seg.slice(1)] : seg));
+  return { code: out, map: { ...map, mappings: encode(lines) } };
+}
+
 /** Files matched by `require.context(dir, recursive, filter)` as `./relative` keys, sorted by path like Metro. */
 export function listContextFiles(dir: string, recursive: boolean, filter: RegExp): string[] {
   const out: string[] = [];

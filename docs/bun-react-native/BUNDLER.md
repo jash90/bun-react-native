@@ -102,7 +102,12 @@ z cache po treści — faza bundlowania w buildzie Xcode: **1,04 s**. Dev server
   działający w aplikacji Release, OTA: bytecode wskazuje HTML po md5), zależności opcjonalne (`react-native-webview`).
 - **Release po zmianach**: pełny build Xcode (bundle Bun 12,6 s w fazie Xcode, bytecode Hermes, warianty
   `back-icon@2x/@3x.ios`) uruchomiony na symulatorze; Gradle `createBundleReleaseJsAndAssets` przez Buna.
-- Testy: `bun run test:tools` — 28 testów (resolver i warstwy Expo, rekordy assetów Metro, szablon `require.context`,
+- **Strict mode, `--unstable-hosted-native`, `--source-maps inline`** (trzecia runda): porównanie
+  `bun run compare:export <metro> <bun>` daje 0 różnic dla `-p ios --unstable-hosted-native` (± `--no-bytecode`;
+  assety `assets/<ścieżka>/<nazwa>.<md5>@Nx.png`, identyczne obiekty `registerAsset`), `--source-maps inline` (iOS
+  z Hermesem: sam `.hbc`; bez bytecode: mapa jako `data:` URL; web: jak Expo — zewnętrzny `.map`) i pełnego eksportu
+  projektu. Bundle z `"use strict"`: `hermesc` 0 błędów, aplikacje Release iOS i Android, eksport web w przeglądarce.
+- Testy: `bun run test:tools` — 29 testów (resolver i warstwy Expo, rekordy assetów Metro, szablon `require.context`,
   kolejność grafu, minifier).
 
 ## Ograniczenia (stan obecny)
@@ -110,7 +115,7 @@ z cache po treści — faza bundlowania w buildzie Xcode: **1,04 s**. Dev server
 | Ograniczenie | Skutek | Obejście |
 |---|---|---|
 | React Server Components / server functions (`experiments.reactServerComponentRoutes`, `reactServerFunctions`, beta w Expo) | `export` kończy się czytelnym błędem; wymagają `react-server-dom-webpack` (nie ma go w projekcie) | `bun run export:metro`, `bun run start:metro` |
-| `--unstable-hosted-native`, mapy `inline` (`--source-maps inline`) | nieobsługiwane | Metro |
+| Tryb ścisły: Bun łączy moduły w jedną funkcję IIFE, więc bundler wstawia na jej początek `"use strict"` (Metro dodaje go do każdego modułu ES) | moduły czysto CommonJS, które w Metro działają w trybie nieścisłym, u nas są ścisłe (np. przypisanie do niezadeklarowanej zmiennej rzuca wyjątek) | kod modułu poprawić albo przenieść do ES |
 | tvOS/macOS: rozwiązywanie, rozszerzenia, autolinking i pakiet hosta są przeniesione z Expo, ale bez `react-native-tvos`/`react-native-macos` w projekcie niesprawdzone na urządzeniu | — | — |
 | Z `asyncRoutes` eksport web ładuje wejście jako `<script type="module">` (chunki ES Buna), Metro — klasyczne skrypty | te same trasy i pliki statyczne, inne nazwy chunków JS; z `unstable_useServerRendering` bez dzielenia (lista skryptów expo-server to klasyczne skrypty) | — |
 | Arkusz atomowych stylów react-native-web w HTML przy loaderach | Expo renderuje strony równolegle przy wspólnym rejestrze stylów; przy loaderach przeplot różni się od Metro, więc lista klas `r-…` w `<style>` strony bywa inna (bez wpływu na działanie, wynik deterministyczny) | — |

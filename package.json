@@ -19,6 +19,7 @@
     "typecheck": "tsc --noEmit",
     "test": "jest",
     "test:tools": "bun test",
+    "compare:export": "bun tools/bun-bundler/compare-exports.ts",
     "reset-project": "node ./scripts/reset-project.js",
     "eas-build-pre-install": "chmod +x tools/bin/node && set-env PATH \"$EAS_BUILD_WORKINGDIR/tools/bin:$PATH\"",
     "eas-build-post-install": "node -e \"if (!process.versions.bun) { console.error('node is not Bun: tools/bin/node is not first on PATH'); process.exit(1) }\""
