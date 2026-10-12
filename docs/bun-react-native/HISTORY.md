@@ -329,7 +329,10 @@ faza 5.
    | Wszystko naraz, `export:embed` iOS i Android | bajt w bajt = Node (36 i 44 pliki) |
 
    Trasa `/rsc` w fiksturze wymagała `TabTrigger` w `app-tabs.web.tsx` (szablon używa własnych zakładek; bez niego
-   `/rsc` pokazuje ekran główny). Niesprawdzone: RSC w `expo start` (dev), `expo-updates` w prawdziwym buildzie Xcode.
+   `/rsc` pokazuje ekran główny). RSC w `expo start` (`bun run start` sam przełącza się na Metro): błąd
+   `__webpack_get_script_filename__ is not defined` — identyczny na Node 25.9.0, więc błąd Expo (KNOWN-ISSUES #17);
+   jednolinijkowy shim w `rsc/runtime.js` fikstury go usuwa (sprawdzone w Chromium, plik przywrócony po teście).
+   Niesprawdzone: `expo-updates` w prawdziwym buildzie Xcode.
 7. **Wniosek** (PLAN-1TO1.md § 2a): 1:1 najtaniej daje Metro jako silnik na Bunie; fazy 1–5 planu dla bundlera Buna
    czekają na decyzję o domyślnym silniku.
 

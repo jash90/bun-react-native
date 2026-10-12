@@ -82,8 +82,8 @@ Postęp tej drogi: `WorkerFarm` na wątkach Buna (`ff9e15a`); cache transformacj
 buildów natywnych z `EXPO_PUBLIC_*` w kluczu (ciepły `export:embed` 1,85 s, bajty jak na zimno; BUNDLER.md). Dalej:
 macierz weryfikacji (faza 6) na silniku Metro — zrobiona w fiksturze (HISTORY etap 12, faza 1 pkt 6): plugin
 `metro.config.js` (SVG), `expo-updates`, Atlas i RSC dają na Bunie to samo co Metro na Node (bajt w bajt, RSC web
-przy terserze), RSC działa w `expo serve` na Bunie. Zostaje: RSC w `expo start`, prawdziwe buildy Release z
-`expo-updates` na urządzeniach.
+przy terserze), RSC działa w `expo serve` na Bunie. RSC w `expo start` ma błąd Expo (KNOWN-ISSUES #17, ten sam na Node).
+Zostaje: prawdziwe buildy Release z `expo-updates` na urządzeniach.
 
 ## 3. Fazy
 
@@ -237,6 +237,9 @@ serializera Expo, a nie przeróbki obecnego wyjścia. Druga przyczyna: RSC wymag
 - `/events` w Expo CLI nigdy nic nie wysyła (`createEventSocket.js:32,43,61`) — błąd Expo.
 - Klucz prebundla eager bez `skipServer` — błąd Expo (KNOWN-ISSUES #15).
 - `process.getActiveResourcesInfo()` w Bunie zwraca `[]` (KNOWN-ISSUES #14).
+- `.hbc` z `expo export` niedeterministyczne przez losową ścieżkę tymczasową (KNOWN-ISSUES #16) — Expo.
+- RSC w dev: brak `__webpack_get_script_filename__` w runtime Expo (KNOWN-ISSUES #17) — Expo.
+- `EXPO_PUBLIC_*` wstawiane w produkcji nie są w kluczu cache Metro/Expo, a Expo w CI pomija `--reset-cache` — Expo.
 
 ## Źródła
 
