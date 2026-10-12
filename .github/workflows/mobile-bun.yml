@@ -54,7 +54,7 @@ jobs:
             --entry-file ../node_modules/expo-router/entry.js --bundle-output out/index.android.bundle \
             --assets-dest out/res --sourcemap-output out/index.android.bundle.map
           ../node_modules/hermes-compiler/hermesc/linux64-bin/hermesc -emit-binary -O -out out/index.android.hbc out/index.android.bundle
-      - name: expo export (iOS, Android: EAS Update layout, Hermes bytecode; web static) - Metro on Bun
+      - name: expo export (iOS, Android - EAS Update layout, Hermes bytecode; web static) - Metro on Bun
         working-directory: example
         run: |
           bun expo export --output-dir dist
