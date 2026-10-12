@@ -208,8 +208,8 @@ export async function exportWebAsync(opts: WebExportOptions) {
   const output: 'single' | 'static' | 'server' = exp.web?.output ?? 'single';
   const routerRoot = getRouterRoot(projectRoot, exp);
   const appDir = path.join(projectRoot, routerRoot);
-  const entry = path.join(projectRoot, h.resolveRelativeEntryPoint(projectRoot, { platform: 'web' }));
-  const entryFile = require.resolve(entry, { paths: [projectRoot] });
+  // absolute (Expo's relative entry is relative to the Metro server root, the workspace root in a monorepo)
+  const entryFile = h.resolveEntryPoint(projectRoot, { platform: 'web' });
   const exportServer = output === 'server';
   const useServerRendering = exp.extra?.router?.unstable_useServerRendering ?? false;
   const isExportingWithSSR = exportServer && useServerRendering;

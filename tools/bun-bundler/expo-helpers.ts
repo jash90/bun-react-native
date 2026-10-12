@@ -37,7 +37,10 @@ export function expoHelpers(projectRoot: string) {
     getErrorOverlayHtmlAsync: cli('start/server/metro/metroErrorInterface').getErrorOverlayHtmlAsync,
     createFaviconAsString: req('@expo/router-server/build/utils/html').createFaviconAsString,
     // native
+    /** entry module relative to the Metro server root (the workspace root in a monorepo), like Expo's URLs */
     resolveRelativeEntryPoint: req('@expo/config/paths').resolveRelativeEntryPoint,
+    /** absolute path of the entry module */
+    resolveEntryPoint: req('@expo/config/paths').resolveEntryPoint as (projectRoot: string, options: { platform: string }) => string,
     buildHermesBundleAsync: req('@expo/metro-config/build/serializer/exportHermes').buildHermesBundleAsync,
   };
 }

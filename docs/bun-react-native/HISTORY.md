@@ -417,6 +417,28 @@ faza 5.
    RSC) wywracała start błędem `window.location.href is not defined` — błąd fikstury, nie bundlera. Android: tylko
    porównanie manifestów (pkt 4), bez buildu Gradle.
 
+### Faza 5 — zamknięta decyzją z § 2a
+
+RSC zostaje na Metro (runtime Buna, automatycznie); weryfikacja w macierzy fazy 1. Odtwarzanie RSC w bundlerze Buna
+(15–22 dni) nie daje lepszej zgodności niż Metro.
+
+### Faza 6 — macierz weryfikacji
+
+1. **Monorepo** (`/tmp/bunpoc/mono`: workspace Buna `apps/mobile` = kopia aplikacji z HEAD + `packages/ui` z
+   komponentem TS i obrazem PNG, `linker = "hoisted"`; Expo sam ustawia `watchFolders` i `unstable_serverRoot` na
+   korzeń workspace):
+   - `export:embed` iOS: bundler Buna i Metro zawierają moduł z `@mono/ui`, identyczny zbiór 37 assetów (pliki spoza
+     aplikacji jako `assets/__packages/ui/...`, nazewnictwo Metro);
+   - serwer dev (iOS, URL z manifestu Expo względem korzenia workspace): bundle i mapa bajt w bajt jak Metro;
+   - **błąd znaleziony i naprawiony**: `bun run export` szukał wpisu w `apps/mobile/node_modules/expo-router/entry` —
+     `resolveRelativeEntryPoint` Expo zwraca ścieżkę względem korzenia serwera Metro (korzenia workspace), a
+     `export.ts`/`web-export.ts` doklejały ją do katalogu aplikacji; teraz bezwzględny `resolveEntryPoint` Expo. Po
+     poprawce `compare:export` (iOS + Android + web static) 90 plików / 0 różnic;
+   - **błąd znaleziony i naprawiony**: web dev — czcionka z `node_modules` korzenia workspace pod
+     `/node_modules/...` (404), bo publicPath `/assets` + ścieżka `../../node_modules` się skracała. Teraz publicPath
+     dev Expo (`/assets/?unstable_path=.`) i kodowanie jak `getUniversalAssetData`: URL-e i bajty jak w Metro (także w
+     zwykłym repo: `/assets/?unstable_path=.%2Fassets%2Fimages/...`).
+
 ---
 
 ## Jak powtórzyć weryfikację

@@ -222,6 +222,9 @@ kontrakty; zagnieżdżone akcje serwerowe nie działają na Hermesie (ograniczen
 
 ### Faza 6 — macierz weryfikacji (2–3 dni)
 
+**Stan (2026-10-12):** monorepo zrobione (2 błędy naprawione, HISTORY etap 12 faza 6). Fizyczny iPhone pominięty
+(zasada projektu), EAS Build i CI wymagają konta / zdalnego repo — poza zakresem lokalnym.
+
 Expo Go i dev na emulatorze Androida; fizyczny iPhone i Android; tvOS/macOS (projekty z `react-native-tvos` /
 `react-native-macos`); monorepo (workspace, `watchFolders`, `unstable_serverRoot`); EAS Build w chmurze z planem
 bundlowania przez Buna; CI. Bez znanych braków w kodzie, ale nic z tego nie było uruchomione.

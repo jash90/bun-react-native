@@ -178,10 +178,12 @@ export class DevGraph {
     } else if (key === ASSET_REGISTRY_VIRTUAL) {
       mod.code = ASSET_REGISTRY_SRC;
     } else if (key.startsWith(ASSET_PREFIX)) {
-      const data = getAssetData(this.assetFiles.get(key)!, this.project.projectRoot, '/assets', this.project.platform);
+      // Expo's dev publicPath, path URL-encoded like getUniversalAssetData (monorepo: ./../../node_modules/...)
+      const data = getAssetData(this.assetFiles.get(key)!, this.project.projectRoot, '/assets/?unstable_path=.', this.project.platform);
+      const query = data.httpServerLocation.match(/\?unstable_path=(.*)/);
+      if (query?.[1]) data.httpServerLocation = data.httpServerLocation.replace(query[1], encodeURIComponent(query[1]));
       const { files, fileSystemLocation, ...publicData } = data;
       if (this.project.isWeb) {
-        // like @expo/metro-config's asset transformer for web: a URL served by the dev server (/assets/...)
         const uri = JSON.stringify(`${data.httpServerLocation}/${data.name}.${data.type}`);
         mod.code =
           data.width != null || data.height != null

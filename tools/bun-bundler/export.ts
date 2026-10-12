@@ -52,7 +52,8 @@ async function exportNativeBundle(opts: ExportOptions, platform: Exclude<ExportP
     const mapFile = opts.sourceMaps ? path.join(tmp, 'index.js.map') : undefined;
     const result = await bundle({
       projectRoot,
-      entryFile: entry,
+      // absolute: `entry` is relative to the Metro server root (the workspace root in a monorepo)
+      entryFile: h.resolveEntryPoint(projectRoot, { platform }),
       platform,
       dev: opts.dev,
       minify: opts.minify,
