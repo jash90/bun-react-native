@@ -1,5 +1,8 @@
-// Workaround for oven-sh/bun#44947: Node (libuv scandir) returns directory entries sorted,
-// Bun returns filesystem order. Metro's asset resolution depends on that order.
+// Node behaviours Metro / Expo depend on that Bun does differently (docs/bun-react-native/KNOWN-ISSUES.md):
+//   #4  fs.readdir*: Node (libuv scandir) returns directory entries sorted, Bun filesystem order (oven-sh/bun#44947)
+//       - Metro's asset resolution depends on that order
+//   #18 util.parseEnv: Node returns the keys sorted (a std::map, byte order), Bun in file order - @expo/env parses
+//       .env files with it, so the order of EXPO_PUBLIC_* variables in development bundles depends on it
 if (process.versions.bun) {
   const fs = require('fs');
   const byName = (a, b) => {
@@ -19,4 +22,14 @@ if (process.versions.bun) {
   };
   const origP = fs.promises.readdir;
   fs.promises.readdir = async function (...args) { return sortResult(await origP.apply(this, args)); };
+  const util = require('util');
+  const origParseEnv = util.parseEnv;
+  if (typeof origParseEnv === 'function') {
+    util.parseEnv = function parseEnv(content) {
+      const parsed = origParseEnv.call(this, content);
+      const out = {};
+      for (const key of Object.keys(parsed).sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)))) out[key] = parsed[key];
+      return out;
+    };
+  }
 }
