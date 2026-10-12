@@ -80,7 +80,10 @@ domyślnego silnika należy do właściciela projektu (§ 5, pkt 0).
 
 Postęp tej drogi: `WorkerFarm` na wątkach Buna (`ff9e15a`); cache transformacji Metro przeżywający `--reset-cache`
 buildów natywnych z `EXPO_PUBLIC_*` w kluczu (ciepły `export:embed` 1,85 s, bajty jak na zimno; BUNDLER.md). Dalej:
-macierz weryfikacji (faza 6) na silniku Metro — pluginy `metro.config.js`, `expo-updates`, RSC, Atlas w fiksturach.
+macierz weryfikacji (faza 6) na silniku Metro — zrobiona w fiksturze (HISTORY etap 12, faza 1 pkt 6): plugin
+`metro.config.js` (SVG), `expo-updates`, Atlas i RSC dają na Bunie to samo co Metro na Node (bajt w bajt, RSC web
+przy terserze), RSC działa w `expo serve` na Bunie. Zostaje: RSC w `expo start`, prawdziwe buildy Release z
+`expo-updates` na urządzeniach.
 
 ## 3. Fazy
 

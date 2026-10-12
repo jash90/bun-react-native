@@ -317,7 +317,20 @@ faza 5.
    identyczny ze wzorcem sprzed zmiany `cacheVersion`. Zimne pomiary przy load average 82 (inne procesy) dawały
    12–14 s — powtórzone przy normalnym obciążeniu.
 5. Uwaga przy testach serwera dev: `CI=1` wyłącza w Expo obserwowanie plików — nowy plik nie trafia do mapy plików.
-6. **Wniosek** (PLAN-1TO1.md § 2a): 1:1 najtaniej daje Metro jako silnik na Bunie; fazy 1–5 planu dla bundlera Buna
+6. **Macierz weryfikacji na silniku Metro** (fikstura `/tmp/bunpoc/wt-p6`: odłączony worktree z `50f03ea`, instalacje
+   tylko tam; wzorzec: Metro na Node 25.9.0 z nvm, świeży `TMPDIR` po obu stronach):
+
+   | Funkcja | Wynik na Bunie |
+   |---|---|
+   | `react-native-svg-transformer` (`babelTransformerPath`, `sourceExts`/`assetExts` z README) | `export:embed` iOS bajt w bajt = Node; bundler Buna ignoruje config i pakuje `logo.svg` jako asset (komponent byłby liczbą) |
+   | `expo-updates` (`createUpdatesResources.js ios … all`, `CONFIGURATION=Release`) | `app.manifest` = Node poza losowymi `id`/`commitTime` (36 assetów); assety z `export:embed` bundlera Buna = zbiór Metro poza SVG |
+   | Expo Atlas (`EXPO_ATLAS=1 expo export -p ios`) | `.expo/atlas.jsonl`: 7 modułów runtime + 1520 modułów |
+   | RSC (`react-server-dom-webpack`, `experiments.reactServerFunctions`, `web.output: single`, Server Function `'use server'`) | `expo export -p web` bajt w bajt = Node przy `METRO_BUN_MINIFIER=0` (z minifikatorem Buna te same pliki, inne bajty JS); `bun run export` = Metro na Bunie (automatyczne przełączenie); `expo serve` na Bunie + Chromium: `POST /_flight/web/ACTION_…/renderInfo` 200, tekst z serwera z sekretem z `process.env` |
+   | Wszystko naraz, `export:embed` iOS i Android | bajt w bajt = Node (36 i 44 pliki) |
+
+   Trasa `/rsc` w fiksturze wymagała `TabTrigger` w `app-tabs.web.tsx` (szablon używa własnych zakładek; bez niego
+   `/rsc` pokazuje ekran główny). Niesprawdzone: RSC w `expo start` (dev), `expo-updates` w prawdziwym buildzie Xcode.
+7. **Wniosek** (PLAN-1TO1.md § 2a): 1:1 najtaniej daje Metro jako silnik na Bunie; fazy 1–5 planu dla bundlera Buna
    czekają na decyzję o domyślnym silniku.
 
 ---
