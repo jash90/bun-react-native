@@ -191,6 +191,12 @@ HISTORY (etap 12, faza 4).
 
 ### Faza 5 — React Server Components na bundlerze Buna (15–22 dni po fazach 1 i 3; 22–30 bez nich)
 
+**Stan (2026-10-12, decyzja wg § 2a):** nie realizowana. Projekty z RSC idą automatycznie przez Metro na runtime
+Buna (`metro-config-support.ts`), co daje wynik Metro z konstrukcji — sprawdzone w macierzy fazy 1: eksport web bajt w
+bajt z Node (terser), `expo serve` na Bunie z działającą Server Function, natywne `export:embed` bajt w bajt. RSC w
+`expo start` ma błąd Expo (KNOWN-ISSUES #17), ten sam na Node. Odtwarzanie RSC w bundlerze Buna (kroki niżej) nie
+daje 1:1 lepszego niż Metro, a kosztuje 15–22 dni.
+
 Kontrakty, które musi spełnić nasz serwer, żeby działał niezmieniony kod Expo (`createServerComponentsMiddleware.js:81`,
 renderer `@expo/router-server/build/rsc/rsc-renderer.js`, eksport `MetroBundlerDevServer.js:718-829`):
 `ssrLoadModule`, `ssrLoadModuleArtifacts` (`metroImportAsArtifactsAsync`), `createModuleId` i format modułów Metro.
