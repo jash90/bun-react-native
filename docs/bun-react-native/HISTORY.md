@@ -211,7 +211,7 @@ porównana punkt po punkcie z `tools/bun-bundler`, każda różnica sprawdzona e
    v98; aplikacja na symulatorze: ekran główny i zakładka Explore. Mapy jak w skrypcie RN (`hermesc
    -output-source-map` + `compose-source-maps.js`) — te same klucze co przy mapie Metro.
 
-## Etap 11 — Expo CLI jako interfejs: `expo start` z Expo Go, eager Release, nazwy chunków, RSC (`6ccba38`, …)
+## Etap 11 — Expo CLI jako interfejs: `expo start` z Expo Go, eager Release, nazwy chunków, RSC (`6ccba38`, `776abb1`)
 
 Źródła: dokumentacja Expo (protokół Expo Updates v1, przewodnik React Server Components, `llms.txt`) i kod
 `@expo/cli` 57.0.28 (`BundlerDevServer`, `MetroBundlerDevServer`, middleware, `start/interface`, `export/embed`).
