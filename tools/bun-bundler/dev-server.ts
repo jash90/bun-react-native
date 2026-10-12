@@ -19,6 +19,7 @@ import { getAssetRecord } from './assets';
 import { DevGraph, type HmrUpdate } from './dev-graph';
 import { domComponentHtml, domRoot } from './dom';
 import { loadProjectEnv, projectEnvFiles, reloadProjectEnv } from './env';
+import { createMessageSocket, messageSocketData, type MessageSocketData } from './message-socket';
 import { devClientMap } from './sourcemap';
 import { createWebDevHandler } from './web-dev';
 
@@ -26,20 +27,40 @@ export interface DevServerOptions {
   projectRoot: string;
   port: number;
   host?: string;
+  /** false when Expo CLI (`expo start`, ./expo-dev-server.ts) already loaded the .env files */
+  loadEnv?: boolean;
+  /** no startup line (Expo CLI prints the server URLs) */
+  quiet?: boolean;
+  /**
+   * Expo CLI's dev-server middleware (manifest for Expo Go / dev clients, `/_expo/*` endpoints), run before the
+   * bundler routes; `null` = not handled
+   */
+  expoMiddleware?: (request: Request) => Promise<Response | null>;
+  /** Expo's CORS middleware: response headers to add, or an error for a disallowed cross-origin request */
+  cors?: (request: Request) => { headers: Record<string, string>; error?: string };
+  /** file events in Metro's watcher shape (Expo typed routes, TypeScript setup) */
+  onFileChanges?: (changes: FileChanges) => void;
+}
+
+/** Metro file-map change event (`[absolutePath, metadata]` tuples) */
+export interface FileChanges {
+  addedFiles: [string, object][];
+  modifiedFiles: [string, object][];
+  removedFiles: [string, object][];
 }
 
 type Platform = 'ios' | 'android' | 'web' | 'tvos' | 'macos';
 
 const PLATFORM_LABEL: Record<Platform, string> = { ios: 'iOS', android: 'Android', web: 'Web', tvos: 'tvOS', macos: 'macOS' };
 const platformOf = (url: string): Platform => (url.match(/[?&]platform=(android|web|tvos|macos)(&|$)/)?.[1] as Platform) ?? 'ios';
-type WsData = { kind: 'hot' | 'message' | 'inspector'; platform?: Platform; key?: string; [k: string]: any };
+type WsData = { kind: 'hot' | 'message' | 'inspector' | 'devtools-plugins'; platform?: Platform; key?: string; message?: MessageSocketData; [k: string]: any };
 
 const IGNORED_DIRS = /(^|[\\/])(node_modules|\.git|ios|android|\.expo|dist|coverage)([\\/]|$)/;
 
 export async function startDevServer(opts: DevServerOptions) {
   const { projectRoot, port } = opts;
   // like `expo start`: development mode, .env files loaded before any bundle (and its transform workers) exists
-  loadProjectEnv(projectRoot, 'development');
+  if (opts.loadEnv !== false) loadProjectEnv(projectRoot, 'development');
   const envFiles = projectEnvFiles(projectRoot);
   const req = createRequire(path.join(projectRoot, 'package.json'));
   const { TraceMap, FlattenMap, originalPositionFor, encodedMap } = req('@jridgewell/trace-mapping');
@@ -57,7 +78,7 @@ export async function startDevServer(opts: DevServerOptions) {
   const platformOfKey = (key: string) => key.split('|')[0] as Platform;
   const labelOf = (key: string) => PLATFORM_LABEL[platformOfKey(key)] + (key.includes('|dom:') ? ' DOM component' : '');
   const hotClients = new Set<ServerWebSocket<WsData>>();
-  const messageClients = new Set<ServerWebSocket<WsData>>();
+  const messages = createMessageSocket<WsData>();
   const mapCache = new Map<string, { raw: any; flat: any; trace: any; graph: DevGraph }>();
   /** lazy bundles (`modulesOnly=true`): source maps by `<platform> <pathname>` */
   const lazyMaps = new Map<string, { raw: any; flat: any; trace: any; graph: DevGraph }>();
@@ -189,7 +210,7 @@ export async function startDevServer(opts: DevServerOptions) {
         console.log(`[HMR ${labelOf(key).toLowerCase().replace(' dom component', ' dom')}] ${names.join(', ')}`);
       } else {
         // no Fast Refresh client: reload the app instead
-        for (const ws of messageClients) ws.send(JSON.stringify({ version: 2, method: 'reload' }));
+        messages.broadcast('reload');
         console.log(`[reload ${platform}] ${names.join(', ')}`);
       }
     }
@@ -197,105 +218,140 @@ export async function startDevServer(opts: DevServerOptions) {
 
   // ---- file watching (fs.watch also reports reads/no-op events: react to new mtime/size only)
   const seen = new Map<string, string>();
-  const pending = new Set<string>();
+  const pending = new Map<string, 'add' | 'change' | 'delete'>();
   let timer: ReturnType<typeof setTimeout> | null = null;
-  const changed = (rel: string) => {
+  const changed = (rel: string): 'add' | 'change' | 'delete' | null => {
     try {
       const st = fs.statSync(path.join(projectRoot, rel));
+      if (!st.isFile()) return null;
       const sig = `${st.mtimeMs}:${st.size}`;
       const prev = seen.get(rel);
       seen.set(rel, sig);
-      return prev === undefined ? Date.now() - st.mtimeMs < 2000 : prev !== sig;
+      if (prev !== undefined) return prev !== sig ? 'change' : null;
+      if (Date.now() - st.birthtimeMs < 2000) return 'add';
+      return Date.now() - st.mtimeMs < 2000 ? 'change' : null;
     } catch {
-      return seen.delete(rel) || true; // deleted
+      return seen.delete(rel) || true ? 'delete' : null;
     }
   };
   fs.watch(projectRoot, { recursive: true }, (_event, filename) => {
     if (!filename || IGNORED_DIRS.test(String(filename))) return;
-    if (!changed(String(filename))) return;
-    pending.add(path.join(projectRoot, String(filename)));
+    const kind = changed(String(filename));
+    if (!kind) return;
+    pending.set(path.join(projectRoot, String(filename)), kind);
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => {
-      const files = [...pending];
+      const events = [...pending];
       pending.clear();
-      onFilesChanged(files).catch((e) => console.error(e));
+      if (opts.onFileChanges) {
+        const of = (k: string) => events.filter(([, kind]) => kind === k).map(([f]): [string, object] => [f, { type: 'f' }]);
+        opts.onFileChanges({ addedFiles: of('add'), modifiedFiles: of('change'), removedFiles: of('delete') });
+      }
+      onFilesChanged(events.map(([f]) => f)).catch((e) => console.error(e));
     }, 30);
   });
+  /** `/expo-dev-plugins/broadcast`: Expo DevTools plugins relay (every message goes to the other clients) */
+  const devtoolsPluginClients = new Set<ServerWebSocket<WsData>>();
 
   const { inspector } = await import('./inspector').then((m) => ({ inspector: m.createInspectorProxy({ projectRoot, port }) }));
+
+  /** the bundler's own routes (after Expo's middleware) */
+  async function route(request: Request, srv: Server<WsData>): Promise<Response | undefined> {
+    const url = new URL(request.url);
+    const { pathname, searchParams } = url;
+    const platform = (searchParams.get('platform') ?? 'ios') as Platform;
+
+    if (pathname === '/hot' || pathname === '/message' || pathname === '/expo-dev-plugins/broadcast') {
+      const kind = pathname === '/expo-dev-plugins/broadcast' ? 'devtools-plugins' : (pathname.slice(1) as 'hot' | 'message');
+      const message = kind === 'message' ? messageSocketData(request, srv.requestIP(request)?.address, `http://localhost:${port}`) : undefined;
+      if (srv.upgrade(request, { data: { kind, message } })) return undefined;
+      return new Response('WebSocket upgrade failed', { status: 400 });
+    }
+    if (opts.expoMiddleware) {
+      const expoResponse = await opts.expoMiddleware(request);
+      if (expoResponse) return expoResponse;
+    }
+    const inspectorResponse = await inspector.fetch(request, srv);
+    if (inspectorResponse !== null) return inspectorResponse;
+
+    if (pathname === '/status') return new Response('packager-status:running');
+    if (pathname.endsWith('.bundle')) {
+      try {
+        const code = searchParams.get('modulesOnly') === 'true' ? await serializeLazy(url) : await serialize(url);
+        return new Response(code, { headers: { 'Content-Type': 'application/javascript; charset=UTF-8' } });
+      } catch (e: any) {
+        const message = String(e?.message ?? e);
+        console.error(message);
+        return Response.json({ type: 'TransformError', message, errors: [{ description: message }] }, { status: 500 });
+      }
+    }
+    if (pathname.endsWith('.map')) {
+      if (searchParams.get('modulesOnly') === 'true') {
+        if (!lazyMaps.has(lazyKey(url))) await serializeLazy(url);
+        return Response.json(flatLazyMap(lazyKey(url))!.flat);
+      }
+      const bundleUrl = new URL(url.toString().replace(/\.map(\?|$)/, '.bundle$1'));
+      if (!mapCache.has(keyOf(url))) await serialize(bundleUrl);
+      return Response.json(flatMap(keyOf(url))!.flat);
+    }
+    if (pathname.startsWith('/assets/')) return serveAsset(projectRoot, pathname, searchParams.get('platform') ?? 'web');
+    if (pathname === '/symbolicate' && request.method === 'POST') {
+      const body = await request.json();
+      const traceFor = (file: string) => {
+        if (/[?&]modulesOnly=true/.test(file)) return flatLazyMap(lazyKey(new URL(file)))?.trace ?? null;
+        const key = keyOf(file);
+        return mapCache.has(key) ? flatMap(key)!.trace : null;
+      };
+      return Response.json(symbolicate(projectRoot, body.stack ?? [], traceFor, originalPositionFor));
+    }
+    if (pathname === '/open-stack-frame' || pathname === '/open-url') return new Response('');
+    if (pathname.startsWith('/_expo/@dom')) {
+      // Expo DomComponentsMiddleware: the HTML the native WebView loads for a `"use dom"` component
+      const file = searchParams.get('file');
+      if (!file || !file.startsWith('file://')) return new Response(`Invalid file path: ${file}`, { status: 400 });
+      const { virtualEntry, dom } = domRoot(projectRoot, file);
+      const bundle = new URL(`/${path.relative(projectRoot, virtualEntry).replace(/\.js$/, '')}.bundle`, `http://${request.headers.get('host')}`);
+      for (const [k, v] of Object.entries({ platform: 'web', dev: 'true', hot: 'false', lazy: 'true', 'transform.dom': dom, 'transform.engine': 'hermes' })) bundle.searchParams.set(k, v);
+      return new Response(domComponentHtml(projectRoot, bundle.toString(), path.basename(file)), { headers: { 'Content-Type': 'text/html' } });
+    }
+    const webResponse = await web.fetch(request);
+    if (webResponse) return webResponse;
+    return new Response('Not found', { status: 404 });
+  }
 
   const server: Server<WsData> = Bun.serve<WsData, any>({
     port,
     hostname: opts.host ?? '0.0.0.0',
     idleTimeout: 0,
     async fetch(request, srv) {
-      const url = new URL(request.url);
-      const { pathname, searchParams } = url;
-      const platform = (searchParams.get('platform') ?? 'ios') as Platform;
-
-      if (pathname === '/hot' || pathname === '/message') {
-        if (srv.upgrade(request, { data: { kind: pathname.slice(1) as 'hot' | 'message' } })) return undefined as any;
-        return new Response('WebSocket upgrade failed', { status: 400 });
-      }
-      const inspectorResponse = await inspector.fetch(request, srv);
-      if (inspectorResponse !== null) return inspectorResponse;
-
-      if (pathname === '/status') return new Response('packager-status:running');
-      if (pathname.endsWith('.bundle')) {
-        try {
-          const code = searchParams.get('modulesOnly') === 'true' ? await serializeLazy(url) : await serialize(url);
-          return new Response(code, { headers: { 'Content-Type': 'application/javascript; charset=UTF-8' } });
-        } catch (e: any) {
-          const message = String(e?.message ?? e);
-          console.error(message);
-          return Response.json({ type: 'TransformError', message, errors: [{ description: message }] }, { status: 500 });
-        }
-      }
-      if (pathname.endsWith('.map')) {
-        if (searchParams.get('modulesOnly') === 'true') {
-          if (!lazyMaps.has(lazyKey(url))) await serializeLazy(url);
-          return Response.json(flatLazyMap(lazyKey(url))!.flat);
-        }
-        const bundleUrl = new URL(url.toString().replace(/\.map(\?|$)/, '.bundle$1'));
-        if (!mapCache.has(keyOf(url))) await serialize(bundleUrl);
-        return Response.json(flatMap(keyOf(url))!.flat);
-      }
-      if (pathname.startsWith('/assets/')) return serveAsset(projectRoot, pathname, searchParams.get('platform') ?? 'web');
-      if (pathname === '/symbolicate' && request.method === 'POST') {
-        const body = await request.json();
-        const traceFor = (file: string) => {
-          if (/[?&]modulesOnly=true/.test(file)) return flatLazyMap(lazyKey(new URL(file)))?.trace ?? null;
-          const key = keyOf(file);
-          return mapCache.has(key) ? flatMap(key)!.trace : null;
-        };
-        return Response.json(symbolicate(projectRoot, body.stack ?? [], traceFor, originalPositionFor));
-      }
-      if (pathname === '/open-stack-frame' || pathname === '/open-url') return new Response('');
-      if (pathname.startsWith('/_expo/@dom')) {
-        // Expo DomComponentsMiddleware: the HTML the native WebView loads for a `"use dom"` component
-        const file = searchParams.get('file');
-        if (!file || !file.startsWith('file://')) return new Response(`Invalid file path: ${file}`, { status: 400 });
-        const { virtualEntry, dom } = domRoot(projectRoot, file);
-        const bundle = new URL(`/${path.relative(projectRoot, virtualEntry).replace(/\.js$/, '')}.bundle`, `http://${request.headers.get('host')}`);
-        for (const [k, v] of Object.entries({ platform: 'web', dev: 'true', hot: 'false', lazy: 'true', 'transform.dom': dom, 'transform.engine': 'hermes' })) bundle.searchParams.set(k, v);
-        return new Response(domComponentHtml(projectRoot, bundle.toString(), path.basename(file)), { headers: { 'Content-Type': 'text/html' } });
-      }
-      const webResponse = await web.fetch(request);
-      if (webResponse) return webResponse;
-      return new Response('Not found', { status: 404 });
+      // clients that send no Host header (e.g. React Native's packager status check) get a relative request URL
+      if (!/^https?:/.test(request.url)) request = new Request(new URL(request.url, `http://localhost:${port}`), request);
+      // Expo's CORS middleware first: cross-origin requests from foreign sites are rejected like in Metro
+      const cors = opts.cors?.(request);
+      if (cors?.error) return new Response(cors.error, { status: 500 });
+      const response = await route(request, srv);
+      if (response && cors) for (const [k, v] of Object.entries(cors.headers)) if (!response.headers.has(k)) response.headers.set(k, v);
+      return response as Response;
     },
     websocket: {
       open(ws) {
-        if (ws.data.kind === 'message') messageClients.add(ws);
+        if (ws.data.kind === 'message') messages.open(ws);
+        else if (ws.data.kind === 'devtools-plugins') devtoolsPluginClients.add(ws);
         else if (ws.data.kind === 'inspector') inspector.websocket.open(ws);
       },
       close(ws) {
         hotClients.delete(ws);
-        messageClients.delete(ws);
+        devtoolsPluginClients.delete(ws);
+        if (ws.data.kind === 'message') messages.close(ws);
         if (ws.data.kind === 'inspector') inspector.websocket.close(ws);
       },
       message(ws, raw) {
         if (ws.data.kind === 'inspector') return inspector.websocket.message(ws, raw);
+        if (ws.data.kind === 'message') return messages.message(ws, raw);
+        if (ws.data.kind === 'devtools-plugins') {
+          for (const client of devtoolsPluginClients) if (client !== ws) client.send(raw);
+          return;
+        }
         if (ws.data.kind !== 'hot') return;
         let msg: any;
         try {
@@ -316,12 +372,8 @@ export async function startDevServer(opts: DevServerOptions) {
     },
   });
 
-  console.log(`Bun dev server listening on http://localhost:${server.port}`);
-  /** Expo's broadcastMessage: `{ version: 2, method, params }` to every app connected to `/message` */
-  const broadcast = (method: string, params?: object) => {
-    for (const ws of messageClients) ws.send(JSON.stringify({ version: 2, method, params }));
-  };
-  return { server, port: server.port as number, broadcast };
+  if (!opts.quiet) console.log(`Bun dev server listening on http://localhost:${server.port}`);
+  return { server, port: server.port as number, broadcast: messages.broadcast };
 }
 
 // ---------------------------------------------------------------- assets

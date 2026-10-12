@@ -8,8 +8,8 @@
 //   export        - `expo export` on Bun: same flags (--platform/-p ios|android|web|all (repeatable), --output-dir,
 //                   --dev, --no-minify, --no-bytecode, --source-maps, --dump-assetmap, --no-ssg) and output layout
 //                   (EAS Update metadata.json, Hermes bytecode, web single/static/server) - see ./export.ts
-//   start         - development server (Bun.serve) on --port/-p (default 8081), iOS/Android/web, with Expo's terminal
-//                   keys (./terminal.ts); --clear, -i/-a/-w open a platform right away
+//   start         - `expo start` (Expo CLI itself: same flags, terminal UI, Expo Go and development builds) with the
+//                   Bun dev server as its bundler dev server - see ./expo-dev-server.ts
 //   (export:embed lives in ./embed.ts)
 //
 // Escape hatch: RN_BUNDLER=metro runs the same command with Metro (`@expo/cli`).
@@ -27,12 +27,6 @@ function parseArgs(argv: string[]) {
     if ((a === '--platform' || a === '-p') && argv[i + 1] !== undefined) platforms.push(argv[i + 1]);
     if (a === '-p') {
       args.platform = argv[++i];
-      continue;
-    }
-    // `expo start` short flags
-    const short = ({ '-i': 'ios', '-a': 'android', '-w': 'web', '-c': 'clear' } as Record<string, string>)[a];
-    if (short) {
-      args[short] = 'true';
       continue;
     }
     if (a.startsWith('--')) {
@@ -72,16 +66,15 @@ const command = positional[0] ?? 'export:embed';
 
 try {
   if (command === 'start') {
-    const projectRoot = path.resolve(args['project-root'] ?? process.cwd());
-    if (args.clear === 'true' || args['reset-cache'] === 'true') clearCache(projectRoot);
-    const { startDevServer } = await import('./dev-server');
-    // `-p` is the port for `start` (expo start -p 8082), the platform for `export`
-    const port = Number(args.port ?? (/^\d+$/.test(args.platform ?? '') ? args.platform : 8081));
-    const dev = await startDevServer({ projectRoot, port });
-    // like `expo start`: key presses (r, m, j, i, a, w, o, ?) and -i / -a / -w to open a platform right away
-    const { startTerminalInterface } = await import('./terminal');
-    const ui = startTerminalInterface({ projectRoot, port: dev.port, broadcast: dev.broadcast, close: () => dev.server.stop(true) });
-    for (const [flag, key] of [['ios', 'i'], ['android', 'a'], ['web', 'w']] as const) if (args[flag] === 'true') await ui.press(key);
+    // Expo CLI's own `expo start` (flags, terminal UI, Expo Go / dev clients, tunnel...) with the Bun dev server
+    // registered as its bundler dev server (./expo-dev-server.ts)
+    const projectRoot = fs.realpathSync(path.resolve(positional[1] ?? args['project-root'] ?? process.cwd()));
+    const { installBunBundlerDevServer } = await import('./expo-dev-server');
+    installBunBundlerDevServer(projectRoot);
+    const req = createRequire(path.join(projectRoot, 'package.json'));
+    const expoBin = req.resolve('@expo/cli'); // build/bin/cli
+    process.argv = [process.argv[0], expoBin, ...process.argv.slice(process.argv.indexOf('start'))];
+    req(expoBin);
   } else if (command === 'export') {
     const projectRoot = path.resolve(args['project-root'] ?? process.cwd());
     const req = createRequire(path.join(projectRoot, 'package.json'));
