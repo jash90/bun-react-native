@@ -1,6 +1,11 @@
 // Pool of Bun Workers running the Expo Babel transform (./transform-worker.ts); Metro uses jest-worker for this.
 import type { TransformRequest, TransformResponse } from './transform-worker';
 
+// Bun's Web Worker, taken when this module loads (before Expo CLI and project code run): a later `globalThis.Worker`
+// replacement (seen once on CI as node:worker_threads' Worker rejecting the file:// URL) must not reach the pool
+const BunWorker = globalThis.Worker;
+let warnedReplaced = false;
+
 export class TransformPool {
   private workers: Worker[] = [];
   private idle: Worker[] = [];
@@ -18,7 +23,11 @@ export class TransformPool {
     for (let i = 0; i < this.size; i++) {
       // Bun Workers see the process environment from startup, not later process.env changes (Node workers copy the
       // current process.env): pass it, so production transforms inline EXPO_PUBLIC_* from the loaded .env files
-      const w = new Worker(new URL('./transform-worker.ts', import.meta.url).href, { env: { ...process.env } as Record<string, string> });
+      if (globalThis.Worker !== BunWorker && !warnedReplaced) {
+        warnedReplaced = true;
+        console.warn(`[bun-bundler] globalThis.Worker was replaced (${globalThis.Worker?.name}); transform workers use Bun's Worker`);
+      }
+      const w = new BunWorker(new URL('./transform-worker.ts', import.meta.url), { env: { ...process.env } as Record<string, string> });
       const failOwned = (error: string) => {
         // a crashed/exited worker must not leave callers waiting forever
         for (const [id, done] of this.pending) {
