@@ -1,0 +1,107 @@
+// Metro's transform WorkerFarm on Bun worker threads (metro/src/DeltaBundler/WorkerFarm.js, same interface).
+// Metro forks jest-worker child processes (each a full Bun process loading Babel and the Expo transformer);
+// worker_threads share one process, start faster and pass results by structured clone. Bun does not apply
+// bunfig `preload` to worker threads (oven-sh/bun#44947), so each thread loads tools/bun/node-compat.preload.js
+// itself, then runs Metro's own Worker.js - transforms, cache keys and results are Metro's.
+//
+// Installed from metro.config.js: Transformer.js reads `require('./WorkerFarm').default` when Metro creates the
+// bundler, so replacing that export before then is enough. METRO_BUN_WORKERS=0 keeps jest-worker.
+'use strict';
+const path = require('node:path');
+const { Worker } = require('node:worker_threads');
+
+const WORKER = path.join(__dirname, 'metro-worker-farm.worker.js');
+/** transforms queued in a thread at once: one running, one ready to start */
+const MAX_IN_FLIGHT = 2;
+
+function install(projectRoot) {
+  const metroFarm = require(require.resolve('metro/private/DeltaBundler/WorkerFarm', { paths: [projectRoot] }));
+  if (metroFarm.default.isBunWorkerFarm) return;
+  const MetroWorkerFarm = metroFarm.default;
+
+  class BunWorkerFarm extends MetroWorkerFarm {
+    static isBunWorkerFarm = true;
+
+    constructor(config, transformerConfig) {
+      // maxWorkers 1 -> Metro's in-process Worker, no farm
+      super({ ...config, maxWorkers: 1 }, transformerConfig);
+      this._config = config;
+      this._threads = [];
+      this._queue = [];
+      this._calls = new Map();
+      this._nextId = 0;
+      this._sticky = new Map();
+      this._size = Math.max(1, config.maxWorkers);
+    }
+
+    _start() {
+      for (let i = 0; i < this._size; i++) {
+        const thread = new Worker(WORKER, { env: { ...process.env, FORCE_COLOR: '1' } });
+        thread.unref();
+        thread.busy = 0;
+        thread.on('message', ({ id, result, error }) => {
+          const call = this._calls.get(id);
+          this._calls.delete(id);
+          thread.busy--;
+          if (!thread.busy) thread.unref();
+          this._drain();
+          if (error) call.reject(toError(error));
+          else call.resolve(result);
+        });
+        thread.on('error', (error) => {
+          for (const [id, call] of this._calls) if (call.thread === thread) (this._calls.delete(id), call.reject(error));
+        });
+        this._threads.push(thread);
+      }
+    }
+
+    _drain() {
+      while (this._queue.length) {
+        // like jest-worker's computeWorkerKey (stickyWorkers, Metro's default): a file goes back to the thread that
+        // transformed it before (warm Babel caches) unless that thread is saturated; otherwise the least busy one
+        const job = this._queue[0];
+        const sticky = this._config.stickyWorkers ? this._sticky.get(job.filename) : undefined;
+        const thread = sticky && sticky.busy < MAX_IN_FLIGHT ? sticky : this._threads.reduce((a, b) => (b.busy < a.busy ? b : a));
+        if (thread.busy >= MAX_IN_FLIGHT) return;
+        this._queue.shift();
+        if (this._config.stickyWorkers) this._sticky.set(job.filename, thread);
+        thread.busy++;
+        thread.ref();
+        this._calls.set(job.id, { ...job, thread });
+        thread.postMessage({ id: job.id, args: job.args });
+      }
+    }
+
+    async transform(filename, options, fileBuffer) {
+      if (!this._threads.length) this._start();
+      try {
+        const data = await new Promise((resolve, reject) => {
+          this._queue.push({ id: this._nextId++, filename, resolve, reject, args: [filename, options, this._config.projectRoot, this._transformerConfig, fileBuffer] });
+          this._drain();
+        });
+        return { result: data.result, sha1: data.sha1 };
+      } catch (err) {
+        throw err.loc ? this._formatBabelError(err, filename) : this._formatGenericError(err, filename);
+      }
+    }
+
+    async kill() {
+      await Promise.all(this._threads.map((t) => t.terminate()));
+      this._threads = [];
+    }
+  }
+
+  metroFarm.default = BunWorkerFarm;
+}
+
+/** jest-worker's ChildProcessWorker: the native constructor of that name, `type` = its name, stack, own properties */
+function toError({ ctor, message, stack, extra }) {
+  const Ctor = typeof globalThis[ctor] === 'function' ? globalThis[ctor] : Error;
+  const error = new Ctor(message);
+  error.type = ctor;
+  error.stack = stack;
+  Object.assign(error, extra);
+  return error;
+}
+
+module.exports = { install };

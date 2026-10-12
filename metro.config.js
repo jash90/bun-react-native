@@ -6,6 +6,10 @@ if (process.versions.bun) {
   // Bun applies bunfig `preload` to forked processes but not to worker_threads, so run
   // Metro transform workers as processes to get the Node-compat shims (oven-sh/bun#44947).
   config.transformer.unstable_workerThreads = false;
+  // ...unless METRO_BUN_WORKERS=0: transform on Bun worker threads that load the shims themselves.
+  if (process.env.METRO_BUN_WORKERS !== '0') {
+    require('./tools/bun/metro-worker-farm').install(__dirname);
+  }
   // Minify with Bun's native minifier instead of terser (falls back to terser per module when unsafe).
   // Opt out with METRO_BUN_MINIFIER=0.
   if (process.env.METRO_BUN_MINIFIER !== '0') {

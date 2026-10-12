@@ -15,7 +15,7 @@ Dowody i liczby: [VERIFICATION.md](VERIFICATION.md). Znane bugi i kiedy usunąć
 | Bun wywołany jako symlink `node` gubi 1. argument po `--eval` → autolinking Expo pada | oven-sh/bun#40482 | shim uruchamia Buna „pod własną nazwą” (`bun "$@"`) | `tools/bin/node` |
 | Alias `node` w Bunie nie zna `node -v` | Bun 1.4.3 | shim obsługuje `-v/--version` | `tools/bin/node` |
 | `fs.readdir*` w Bunie zwraca kolejność systemu plików (Node sortuje) → inne assety w bundlu | oven-sh/bun#44947 | preload sortujący | `bun-node-compat.preload.js`, `bunfig.toml` |
-| Bun nie aplikuje `preload` w `worker_threads`, a Expo uruchamia transformery Metro w wątkach | Bun + `@expo/metro-config` (`unstable_workerThreads: true`) | pod Bunem workery Metro jako procesy | `metro.config.js` |
+| Bun nie aplikuje `preload` w `worker_threads`, a Expo uruchamia transformery Metro w wątkach | Bun + `@expo/metro-config` (`unstable_workerThreads: true`) | pod Bunem `WorkerFarm` Metro na wątkach Buna, które same ładują preload (`METRO_BUN_WORKERS=0`: procesy jest-worker) | `metro.config.js`, `tools/bun/metro-worker-farm*.js` |
 | Jest widzi `vm.SyntheticModule` (Bun ma je zawsze) i włącza tryb ESM → `Must use import to load ES Module` | Jest 29 `jest-resolve/build/shouldLoadAsEsm.js` | preload ukrywa `vm.SyntheticModule` w procesach Jesta | `jest.bun-preload.js` |
 | Linker `isolated` (domyślny dla nowych workspace'ów) duplikuje moduły natywne Expo | oven-sh/bun#29343 | `linker = "hoisted"` | `bunfig.toml` |
 | Świeży `bun install` rozwiązuje peer `"*"` do najnowszej wersji (`@react-native/metro-config` 0.87 przy RN 0.86) | zachowanie Buna | migracja z istniejącego lockfile'a + pin | `package.json` |
@@ -59,7 +59,8 @@ Xcode + CocoaPods (iOS), JDK 17 + Android SDK (Android) — bez zmian względem 
 | `tools/bun/node-compat.preload.js` | repo | sortowanie `fs.readdir*` jak w Node |
 | `tools/bun/jest.preload.js` | repo | Jest pod Bunem zachowuje się jak pod Node |
 | `tools/bun/expo-cli.preload.js` | repo | `bun expo run:*` / `export:embed`: bundlowanie (także prebundle „eager” Release) przez Buna |
-| `metro.config.js` | katalog aplikacji | pod Bunem `transformer.unstable_workerThreads = false` |
+| `metro.config.js` | katalog aplikacji | pod Bunem `transformer.unstable_workerThreads = false` + `WorkerFarm` na wątkach Buna |
+| `tools/bun/metro-worker-farm.js`, `metro-worker-farm.worker.js` | repo | transformacje Metro w wątkach Buna (`Worker.js` Metro, błędy jak jest-worker) |
 | `tools/bin/node` (chmod +x) | repo | shim `node` → Bun |
 | `plugins/with-bun-xcode-env.js` | katalog aplikacji + `app.json` → `"plugins": ["./plugins/with-bun-xcode-env"]` | `ios/.xcode.env` → `NODE_BINARY=$(command -v bun)` (przeżywa `prebuild --clean`) |
 
@@ -77,8 +78,15 @@ Jeżeli masz już `metro.config.js`, dopisz tylko:
 ```js
 if (process.versions.bun) {
   config.transformer.unstable_workerThreads = false;
+  if (process.env.METRO_BUN_WORKERS !== '0') {
+    require('./tools/bun/metro-worker-farm').install(__dirname);
+  }
 }
 ```
+`metro-worker-farm` podmienia eksport `WorkerFarm` Metro (Transformer czyta go dopiero przy tworzeniu bundlera):
+transformacje idą przez `Worker.js` Metro w wątkach Buna, które najpierw ładują `node-compat.preload.js`. Wynik jest
+bajt w bajt taki jak z procesami jest-worker (`export:embed` iOS/Android, `export`, bundle dev), błędy transformacji
+mają ten sam kształt.
 Nie podmieniaj `transformerPath` — Expo CLI owija niestandardowy transformer „supervising workerem”, co pod Bunem
 psuje `expo export --platform web` (`this._transformer.transformFile` undefined; sprawdzone w PoC).
 

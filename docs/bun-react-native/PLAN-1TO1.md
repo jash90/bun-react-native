@@ -56,6 +56,28 @@ na niej stoi.
 
 Propozycja: format Metro jako domyślny (cel 1:1), `Bun.build` zostaje jako opcja (`BUN_BUNDLER_FORMAT=bun`).
 
+## 2a. Ponowna ocena po pomiarach (2026-10-12)
+
+Test wykonalności przed fazą 1 zmienił obraz. **Fakty** (pomiary w [BUNDLER.md](BUNDLER.md#pomiary-m1-pro)):
+
+1. Prawdziwe Metro działa na Bunie (`RN_BUNDLER=metro`, `start:metro`, `export:metro`) i daje bajty Metro: bundle i
+   mapy `export:embed` iOS/Android identyczne niezależnie od rodzaju workerów, `export` identyczny poza `.hbc`
+   (losowa ścieżka w Expo, KNOWN-ISSUES #16), bundle dev różni się tylko portem w `sourceMappingURL`, błędy
+   transformacji mają ten sam kształt.
+2. `WorkerFarm` Metro można podmienić na wątki Buna (`tools/bun/metro-worker-farm.js`) bez zmiany wyniku; czas równy
+   lub krótszy (Android zimny 8,4 s vs 10,2 s, pierwszy bundle dev 5,3 s vs 6,5 s).
+3. Bundler Buna nie jest szybszy przy `export` (zimny ~29 s w obu, ciepły 12,5 s vs Metro 10,7 s); przy
+   `export:embed` zimny 6,1 s vs 7,7 s. Czas w obu potokach to głównie Babel.
+4. Realne przewagi bundlera Buna: cache po treści przeżywający `--reset-cache` buildów natywnych (~1 s vs ~8 s) i
+   bundle mniejsze o ~9,4% — ta druga wynika z formatu `Bun.build`, więc znika w trybie 1:1 (format Metro).
+
+**Wniosek:** fazy 1–5 tego planu odtwarzają w bundlerze Buna to, co Metro na Bunie robi już dziś bajt w bajt, kosztem
+33,5–50 dni i bez zysku szybkości w trybie 1:1. Tańsza droga do 1:1: **Metro jako silnik na Bunie**, a z Buna to, co
+nie zmienia wyniku — `WorkerFarm` na wątkach (zrobione), opcjonalnie minifikator Buna, ewentualnie trwały cache
+transformacji dla buildów natywnych (wymaga kluczy uwzględniających `babel.config.js` i `.env`, bo właśnie dlatego
+buildy wołają `--reset-cache`). Bundler Buna zostaje jako tryb „szybszy/mniejszy” z opisanymi różnicami. Wybór
+domyślnego silnika należy do właściciela projektu (§ 5, pkt 0).
+
 ## 3. Fazy
 
 ### Faza 0 — poprawki serwera dev (1,5–2 dni)
@@ -192,6 +214,8 @@ serializera Expo, a nie przeróbki obecnego wyjścia. Druga przyczyna: RSC wymag
 
 ## 5. Decyzje potrzebne przed startem
 
+0. **(po § 2a)** Domyślny silnik: Metro na Bunie (1:1 z definicji; fazy 1–5 zbędne) czy bundler Buna (dzisiejszy
+   domyślny; 1:1 wymaga faz 1–5).
 1. **Domyślny format bundli**: Metro (1:1, większe bundle, bez tree shakingu jak w Expo SDK 57) czy `Bun.build`
    (mniejsze, szybsze, semantyka inna). Propozycja: Metro domyślnie, `Bun.build` jako opcja.
 2. **Minifikacja**: terser (bajty jak w Metro) czy minifikator Buna (szybciej, ten sam kod, inne bajty).

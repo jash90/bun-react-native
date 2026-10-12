@@ -79,6 +79,22 @@ RN_BUNDLER=metro …             # ta sama komenda przez Metro (@expo/cli)
 |---|---|---|
 | Czas całkowity | 37,7 s | 13,1 s |
 
+**Pomiar powtórzony 2026-10-12** (ta sama maszyna, 10 rdzeni; Metro na Bunie z `WorkerFarm` na wątkach Buna
+i z procesami jest-worker; zimny = świeży `TMPDIR` + `--reset-cache`/`--clear`, u nas pusty `node_modules/.cache/bun-rn-bundler`):
+
+| | Metro, wątki Buna | Metro, jest-worker | Bun |
+|---|---|---|---|
+| `export:embed` iOS, zimny / ciepły | 7,65 / 1,85 s | 7,76 / 1,82 s | 6,11 s / — |
+| `export:embed` Android, zimny | 8,43 s | 10,23 s | — |
+| `export` iOS + Android + web, zimny | 29,0 s | 28,1 s | 28,8 s |
+| `export` iOS + Android + web, ciepły | 10,7 s | — | 12,5 s |
+| pierwszy bundle dev iOS (`expo start`), zimny | 5,3 s | 6,5 s | — |
+
+Wynik z tabeli wyżej (`export` 37,7 s vs 13,1 s) **nie powtarza się**: dziś Metro na Bunie eksportuje tak samo szybko
+na zimno i szybciej na ciepło niż bundler Buna. W obu potokach dominuje transformacja Babel (~30–35 s CPU na zimno).
+Przewaga bundlera Buna to cache przeżywający `--reset-cache` buildów natywnych (~1 s zamiast ~8 s) i mniejsze bundle.
+Wnioski: [PLAN-1TO1.md § 2a](PLAN-1TO1.md#2a-ponowna-ocena-po-pomiarach-2026-10-12).
+
 Natywne buildy przekazują `--reset-cache`, więc Metro bundluje w nich zawsze na zimno (~7–8 s); bundler Bun korzysta
 z cache po treści — faza bundlowania w buildzie Xcode: **1,04 s**. Dev server: pierwszy bundle na zimno 7,2 s
 (web 6,6 s), z cache 0,7–2 s; pierwszy SSR po zmianie pliku: przebudowa render.js (~1–5 s), potem ms.

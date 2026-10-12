@@ -290,6 +290,27 @@ faza 5.
    (br/gzip/deflate jak pakiet `compression`), `X-React-Native-Project-Root` na `/status`. Porównanie z Metro:
    identyczne kody, typy, rozmiary i md5 odpowiedzi.
 
+### Faza 1 — test wykonalności: Metro na Bunie zamiast odtwarzania Metro
+
+1. **Pomiar bazowy** (świeży `TMPDIR`, `--reset-cache`): `RN_BUNDLER=metro bun expo export:embed --platform ios
+   --dev false --minify false` 7,8 s zimny / 1,8 s ciepły; bundler Buna 6,1 s zimny. `export` trzech platform: Metro
+   ~28–29 s zimny / 10,7 s ciepły, Bun 28,8 / 12,5 s — stary pomiar 37,7 vs 13,1 s nie powtarza się.
+2. **`WorkerFarm` Metro na wątkach Buna** (`tools/bun/metro-worker-farm.js` + `.worker.js`, instalowany w
+   `metro.config.js`; `METRO_BUN_WORKERS=0` wyłącza): Transformer Metro czyta `require('./WorkerFarm').default` przy
+   tworzeniu bundlera, więc wystarcza podmiana eksportu. Wątek ładuje `node-compat.preload.js` (preload z `bunfig`
+   nie dociera do wątków — sprawdzone: `readdir` w wątku zwraca kolejność systemu plików) i woła `Worker.js` Metro.
+   Przydział jak jest-worker przy `stickyWorkers` (plik wraca do tego samego wątku, inaczej najmniej zajęty; pierwsza
+   wersja z haszem nazwy pliku była wolniejsza: 9,8 s). Błędy odtwarzane jak `ChildProcessWorker` jest-worker
+   (konstruktor o tej nazwie, `type`, `stack`, własne pola) — inaczej Metro pisało `Error:` zamiast `SyntaxError:`.
+3. **Weryfikacja**: `export:embed` iOS i Android — bundle i mapa identyczne z jest-worker; `export` trzech platform —
+   identyczny poza `.hbc`, a to niedeterminizm Expo (losowa ścieżka tymczasowa wkompilowana przez `hermesc`;
+   `hermesc` na tym samym pliku 4× ten sam md5; KNOWN-ISSUES #16); dev (`expo start` na 8091/8092) — bundle różni się
+   tylko portem w `sourceMappingURL`, mapa identyczna, odpowiedź błędu składni identyczna poza ramkami stosu workera;
+   test `tools/bun/metro-worker-farm.test.ts`.
+4. Uwaga przy testach serwera dev: `CI=1` wyłącza w Expo obserwowanie plików — nowy plik nie trafia do mapy plików.
+5. **Wniosek** (PLAN-1TO1.md § 2a): 1:1 najtaniej daje Metro jako silnik na Bunie; fazy 1–5 planu dla bundlera Buna
+   czekają na decyzję o domyślnym silniku.
+
 ---
 
 ## Jak powtórzyć weryfikację
