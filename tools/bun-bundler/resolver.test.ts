@@ -121,6 +121,32 @@ describe('Resolver (Metro-equivalent)', () => {
     expect(rel(r.resolve('react-native/Libraries/Utilities/HMRClient', from(), false))).toBe('node_modules/expo/src/async-require/hmr.ts');
   });
 
+  test('web: react-native-web alias, browser field, node builtins without a package are empty', () => {
+    write('node_modules/react-native-web/package.json', JSON.stringify({ main: 'dist/index.js' }));
+    write('node_modules/react-native-web/dist/index.js');
+    write('node_modules/web-field/package.json', JSON.stringify({ main: 'node.js', browser: 'browser.js' }));
+    write('node_modules/web-field/node.js');
+    write('node_modules/web-field/browser.js');
+    write('node_modules/events/package.json', JSON.stringify({ main: 'events.js' }));
+    write('node_modules/events/events.js');
+    const r = new Resolver({
+      projectRoot: root,
+      platform: 'web',
+      sourceExts: SOURCE_EXTS,
+      assetExts: ASSET_EXTS,
+      mainFields: ['browser', 'module', 'main'],
+      conditionsByPlatform: { web: ['browser'] },
+      preferNativePlatform: false,
+      exactAliases: { 'react-native': 'react-native-web' },
+      browserNodeBuiltins: true,
+    });
+    expect(rel(r.resolve('react-native', from(), true))).toBe('node_modules/react-native-web/dist/index.js');
+    expect(rel(r.resolve('web-field', from(), true))).toBe('node_modules/web-field/browser.js');
+    expect(rel(r.resolve('events', from(), false))).toBe('node_modules/events/events.js'); // same-named package wins
+    expect(r.resolve('node:async_hooks', from(), true)).toEqual({ type: 'empty' });
+    expect(rel(r.resolve('./button', from(), true))).toBe('src/button.tsx'); // no .native on web
+  });
+
   test('unresolvable modules throw', () => {
     expect(() => resolver().resolve('does-not-exist', from(), true)).toThrow();
   });

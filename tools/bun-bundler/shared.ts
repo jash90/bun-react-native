@@ -15,6 +15,7 @@ export const EXTERNAL_REQUIRE_POLYFILL = '\0polyfill:external-require';
 export const ENV_VARS_POLYFILL = '\0polyfill:environment-variables';
 export const ASSET_REGISTRY_SRC = `const assets=[];module.exports={registerAsset:s=>assets.push(s),getAssetByID:s=>assets[s-1]};`;
 export const SCRIPT_WRAPPER_GLOBAL = `typeof globalThis !== 'undefined' ? globalThis : typeof global !== 'undefined' ? global : typeof window !== 'undefined' ? window : this`;
+const EXTERNAL_REQUIRE_WEB_SRC = `global.$$require_external = typeof require !== "undefined" ? (m) => require(m) : () => null;`;
 const EXTERNAL_REQUIRE_SRC =
   'try { global.$$require_external = typeof expo === "undefined" ? require : (moduleId) => { throw new Error(`Node.js standard library module ${moduleId} is not available in this JavaScript environment`);} } catch { global.$$require_external = (moduleId) => { throw new Error(`Node.js standard library module ${moduleId} is not available in this JavaScript environment`);} }';
 
@@ -94,10 +95,14 @@ export class TransformPool {
 
 // ---------------------------------------------------------------- project context
 
+export type Platform = 'ios' | 'android' | 'web';
+
 export interface ProjectOptions {
   projectRoot: string;
-  platform: 'ios' | 'android';
+  platform: Platform;
   dev: boolean;
+  /** web only: 'node' builds the server (static rendering) bundle */
+  environment?: 'client' | 'node';
   routerRoot?: string;
   workers?: number;
   resetCache?: boolean;
@@ -157,13 +162,19 @@ module.exports = ctx;`;
 export function createProject(opts: ProjectOptions) {
   const { projectRoot, platform, dev } = opts;
   const projectRequire = createRequire(path.join(projectRoot, 'package.json'));
+  const isWeb = platform === 'web';
+  const isServer = isWeb && opts.environment === 'node';
   const customTransformOptions: Record<string, string> = {
-    engine: 'hermes',
-    bytecode: '1',
+    ...(isWeb ? {} : { engine: 'hermes', bytecode: '1' }),
+    ...(isServer ? { environment: 'node' } : {}),
     routerRoot: opts.routerRoot ?? 'src/app',
     reactCompiler: String(!!readAppJson(projectRoot)?.expo?.experiments?.reactCompiler),
     baseUrl: '',
   };
+  let shimsDir: string | null = null;
+  try {
+    shimsDir = isWeb ? path.join(path.dirname(projectRequire.resolve('@expo/cli/package.json')), 'static', 'shims') : null;
+  } catch {}
   const resolver = new Resolver({
     projectRoot,
     platform,
@@ -171,6 +182,21 @@ export function createProject(opts: ProjectOptions) {
     assetExts: ASSET_EXTS,
     tsconfigPaths: readTsconfigPaths(projectRoot),
     virtualModules: { [EXTERNAL_REQUIRE_POLYFILL]: '', [ENV_VARS_POLYFILL]: '' },
+    ...(isWeb
+      ? {
+          // Expo web: browser fields for the client, Node resolution for the static-rendering server
+          mainFields: isServer ? ['main', 'module'] : ['browser', 'module', 'main'],
+          conditionsByPlatform: { web: isServer ? ['node'] : ['browser'] },
+          preferNativePlatform: false,
+          exactAliases: {
+            'react-native': 'react-native-web',
+            'react-native/index': 'react-native-web',
+            'react-native/Libraries/Image/resolveAssetSource': 'expo-asset/build/resolveAssetSource',
+          },
+          shimsDir,
+          browserNodeBuiltins: !isServer,
+        }
+      : {}),
   });
   const projectPkg = path.join(projectRoot, 'package.json');
   const resolveFromRoot = (spec: string) => {
@@ -178,21 +204,22 @@ export function createProject(opts: ProjectOptions) {
     if (r.type !== 'sourceFile') throw new Error(`Cannot resolve ${spec}`);
     return r.filePath;
   };
-  const runBeforeMain = [
-    resolveFromRoot('react-native/Libraries/Core/InitializeCore'),
-    resolveFromRoot('expo/src/winter'),
-    resolveFromRoot('@expo/metro-runtime'),
-  ];
-  const polyfillFiles = [
-    ...(projectRequire('@react-native/js-polyfills')() as string[]),
-    EXTERNAL_REQUIRE_POLYFILL,
-    ENV_VARS_POLYFILL,
-    resolveFromRoot('expo/virtual/streams.js'),
-  ];
+  // Metro only runs the run-before-main modules that exist for the platform (InitializeCore is native-only)
+  const runBeforeMain = isWeb
+    ? [resolveFromRoot('expo/src/winter'), resolveFromRoot('@expo/metro-runtime')]
+    : [
+        resolveFromRoot('react-native/Libraries/Core/InitializeCore'),
+        resolveFromRoot('expo/src/winter'),
+        resolveFromRoot('@expo/metro-runtime'),
+      ];
+  const rnPolyfills = projectRequire('@react-native/js-polyfills')() as string[];
+  const polyfillFiles = isWeb
+    ? [EXTERNAL_REQUIRE_POLYFILL, ENV_VARS_POLYFILL, ...rnPolyfills.filter((p) => !p.includes('/console'))]
+    : [...rnPolyfills, EXTERNAL_REQUIRE_POLYFILL, ENV_VARS_POLYFILL, resolveFromRoot('expo/virtual/streams.js')];
 
   // ---- Babel worker pool + transform cache (Bun.hash + Bun.file/Bun.write)
   const pool = new TransformPool(opts.workers ?? Math.max(1, (navigator.hardwareConcurrency ?? 4) - 1));
-  const cacheDir = path.join(projectRoot, 'node_modules', '.cache', 'bun-rn-bundler', `${platform}-${dev ? 'dev' : 'prod'}`);
+  const cacheDir = path.join(projectRoot, 'node_modules', '.cache', 'bun-rn-bundler', `${platform}${isServer ? '-server' : ''}-${dev ? 'dev' : 'prod'}`);
   fs.mkdirSync(cacheDir, { recursive: true });
   const cacheSalt = JSON.stringify({
     v: BUNDLER_CACHE_VERSION,
@@ -236,7 +263,7 @@ export function createProject(opts: ProjectOptions) {
     const out: string[] = [];
     for (const f of polyfillFiles) {
       let code: string;
-      if (f === EXTERNAL_REQUIRE_POLYFILL) code = EXTERNAL_REQUIRE_SRC;
+      if (f === EXTERNAL_REQUIRE_POLYFILL) code = isWeb ? EXTERNAL_REQUIRE_WEB_SRC : EXTERNAL_REQUIRE_SRC;
       else if (f === ENV_VARS_POLYFILL) code = '//';
       else code = (await transform(f, 'script', 'esm')).code ?? '';
       out.push(`(function (global) {\n${code}\n})(${SCRIPT_WRAPPER_GLOBAL});`);
@@ -248,6 +275,8 @@ export function createProject(opts: ProjectOptions) {
     projectRoot,
     platform,
     dev,
+    isWeb,
+    isServer,
     projectRequire,
     projectPkg,
     resolver,

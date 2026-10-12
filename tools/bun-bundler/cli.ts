@@ -5,7 +5,9 @@
 //                   `expo export:embed` / `react-native bundle`, so Xcode and Gradle call it instead of Metro:
 //                   bun tools/bun-bundler/cli.ts export:embed --platform ios --dev false --entry-file index.js \
 //                     --bundle-output main.jsbundle --assets-dest out --sourcemap-output main.map [--minify false]
-//   start         - development server (Bun.serve) on --port (default 8081)
+//   export        - web static export (--platform web --output-dir dist), Expo Router static rendering
+//   start         - development server (Bun.serve) on --port (default 8081), iOS/Android/web;
+//                   --web opens the app in the browser
 //
 // Escape hatch: RN_BUNDLER=metro runs the same command with Metro (`@expo/cli`).
 import path from 'node:path';
@@ -75,13 +77,27 @@ const command = positional[0] ?? 'export:embed';
 try {
   if (command === 'start') {
     const { startDevServer } = await import('./dev-server');
-    await startDevServer({ projectRoot: path.resolve(args['project-root'] ?? process.cwd()), port: Number(args.port ?? 8081) });
+    const server = await startDevServer({ projectRoot: path.resolve(args['project-root'] ?? process.cwd()), port: Number(args.port ?? 8081) });
+    if (args.web === 'true') {
+      const url = `http://localhost:${server.port}`;
+      Bun.spawn(process.platform === 'darwin' ? ['open', url] : ['xdg-open', url], { stdio: ['ignore', 'ignore', 'ignore'] });
+    }
+  } else if (command === 'export') {
+    if ((args.platform ?? 'web') !== 'web') throw new Error('export: only --platform web (native: export:embed)');
+    const { exportWeb } = await import('./web');
+    await exportWeb({
+      projectRoot: path.resolve(args['project-root'] ?? process.cwd()),
+      outputDir: path.resolve(args['output-dir'] ?? 'dist'),
+      minify: args['no-minify'] !== 'true',
+      log: (m) => console.log(m),
+    });
+    process.exit(0);
   } else if (command === 'export:embed' || command === 'bundle') {
     await runExportEmbed(args);
     // Terminated Bun Workers / Bun.build can keep the event loop alive; native build scripts wait for exit.
     process.exit(0);
   } else {
-    console.error(`Unknown command "${command}". Supported: export:embed, bundle, start`);
+    console.error(`Unknown command "${command}". Supported: export:embed, bundle, export, start`);
     process.exit(1);
   }
 } catch (e: any) {

@@ -1,5 +1,6 @@
 // Development server for the Bun bundler (replaces the Metro dev server), built on Bun.serve.
 //
+//   GET  /, /<route> (Accept: text/html) -> web: HTML shell loading the web dev bundle (client-rendered)
 //   GET  /status                       -> "packager-status:running" (RCTBundleURLProvider)
 //   GET  /<entry>.bundle?platform=..   -> dev bundle in Metro module format (./dev-graph.ts)
 //   GET  /<entry>.map?platform=..      -> its source map
@@ -15,6 +16,7 @@ import { createRequire } from 'node:module';
 import type { Server, ServerWebSocket } from 'bun';
 
 import { DevGraph, type HmrUpdate } from './dev-graph';
+import { readAppJson } from './shared';
 
 export interface DevServerOptions {
   projectRoot: string;
@@ -22,7 +24,11 @@ export interface DevServerOptions {
   host?: string;
 }
 
-type Platform = 'ios' | 'android';
+type Platform = 'ios' | 'android' | 'web';
+
+const PLATFORM_LABEL: Record<Platform, string> = { ios: 'iOS', android: 'Android', web: 'Web' };
+const platformOf = (url: string): Platform =>
+  /[?&]platform=android/.test(url) ? 'android' : /[?&]platform=web/.test(url) ? 'web' : 'ios';
 type WsData = { kind: 'hot' | 'message' | 'inspector'; platform?: Platform; [k: string]: any };
 
 const IGNORED_DIRS = /(^|[\\/])(node_modules|\.git|ios|android|\.expo|dist|coverage)([\\/]|$)/;
@@ -73,7 +79,7 @@ export async function startDevServer(opts: DevServerOptions) {
     lastBundleUrl.set(platform, url.toString());
     const { cacheHits, transformed } = g.project.stats;
     console.log(
-      `${platform === 'ios' ? 'iOS' : 'Android'} Bundled ${Math.round(performance.now() - t0)}ms with Bun` +
+      `${PLATFORM_LABEL[platform]} Bundled ${Math.round(performance.now() - t0)}ms with Bun` +
         (fresh ? ` (${transformed} transformed, ${cacheHits} from cache)` : '')
     );
     return result.code;
@@ -164,7 +170,7 @@ export async function startDevServer(opts: DevServerOptions) {
 
   const { inspector } = await import('./inspector').then((m) => ({ inspector: m.createInspectorProxy({ projectRoot, port }) }));
 
-  const server: Server = Bun.serve<WsData, any>({
+  const server: Server<WsData> = Bun.serve<WsData, any>({
     port,
     hostname: opts.host ?? '0.0.0.0',
     idleTimeout: 0,
@@ -172,6 +178,7 @@ export async function startDevServer(opts: DevServerOptions) {
       const url = new URL(request.url);
       const { pathname, searchParams } = url;
       const platform = (searchParams.get('platform') ?? 'ios') as Platform;
+      const wantsHtml = request.method === 'GET' && (request.headers.get('accept') ?? '').includes('text/html');
 
       if (pathname === '/hot' || pathname === '/message') {
         if (srv.upgrade(request, { data: { kind: pathname.slice(1) as 'hot' | 'message' } })) return undefined as any;
@@ -195,14 +202,20 @@ export async function startDevServer(opts: DevServerOptions) {
         if (!mapCache.has(platform)) await serialize(platform, new URL(url.toString().replace(/\.map(\?|$)/, '.bundle$1')));
         return Response.json(flatMap(platform)!.flat);
       }
-      if (pathname.startsWith('/assets/')) return serveAsset(projectRoot, pathname, platform);
+      if (pathname.startsWith('/assets/')) return serveAsset(projectRoot, pathname, searchParams.get('platform') ?? 'web');
+      if (pathname === '/favicon.ico') {
+        const favicon = readAppJson(projectRoot)?.expo?.web?.favicon;
+        return favicon ? new Response(Bun.file(path.resolve(projectRoot, favicon))) : new Response('Not found', { status: 404 });
+      }
       if (pathname === '/symbolicate' && request.method === 'POST') {
         const body = await request.json();
-        const p = (body.stack ?? []).map((f: any) => f?.file).find((f: string) => /platform=android/.test(f ?? '')) ? 'android' : platform;
+        const bundleFrame = (body.stack ?? []).map((f: any) => f?.file).find((f: string) => /\.bundle(\?|$)/.test(f ?? ''));
+        const p = bundleFrame ? platformOf(bundleFrame) : platform;
         if (!mapCache.has(p)) return Response.json({ stack: body.stack ?? [], codeFrame: null });
         return Response.json(symbolicate(projectRoot, body.stack ?? [], flatMap(p)!.trace, originalPositionFor));
       }
       if (pathname === '/open-stack-frame' || pathname === '/open-url') return new Response('');
+      if (wantsHtml) return new Response(webShell(projectRoot), { headers: { 'Content-Type': 'text/html; charset=UTF-8' } });
       return new Response('Not found', { status: 404 });
     },
     websocket: {
@@ -210,10 +223,10 @@ export async function startDevServer(opts: DevServerOptions) {
         if (ws.data.kind === 'message') messageClients.add(ws);
         else if (ws.data.kind === 'inspector') inspector.websocket.open(ws);
       },
-      close(ws, code, reason) {
+      close(ws) {
         hotClients.delete(ws);
         messageClients.delete(ws);
-        if (ws.data.kind === 'inspector') inspector.websocket.close(ws, code, reason);
+        if (ws.data.kind === 'inspector') inspector.websocket.close(ws);
       },
       message(ws, raw) {
         if (ws.data.kind === 'inspector') return inspector.websocket.message(ws, raw);
@@ -226,7 +239,7 @@ export async function startDevServer(opts: DevServerOptions) {
         }
         if (msg.type === 'register-entrypoints') {
           const entry = String(msg.entryPoints?.[0] ?? '');
-          ws.data.platform = (/[?&]platform=android/.test(entry) ? 'android' : 'ios') as Platform;
+          ws.data.platform = platformOf(entry);
           hotClients.add(ws);
           ws.send(JSON.stringify({ type: 'bundle-registered' }));
         } else if (msg.type === 'log') {
@@ -238,6 +251,25 @@ export async function startDevServer(opts: DevServerOptions) {
 
   console.log(`Bun dev server listening on http://localhost:${server.port}`);
   return server;
+}
+
+// ---------------------------------------------------------------- web
+
+/** HTML document for web routes: public/index.html or Expo's template, plus the web dev bundle. */
+function webShell(projectRoot: string): string {
+  const custom = path.join(projectRoot, 'public', 'index.html');
+  const template = fs.existsSync(custom)
+    ? custom
+    : createRequire(path.join(projectRoot, 'package.json')).resolve('@expo/cli/static/template/index.html');
+  const expo = readAppJson(projectRoot)?.expo ?? {};
+  const html = fs
+    .readFileSync(template, 'utf8')
+    .replace(/%LANG_ISO_CODE%/g, expo.web?.lang ?? 'en')
+    .replace(/%WEB_TITLE%/g, expo.web?.name ?? expo.name ?? '');
+  const tags =
+    (expo.web?.favicon ? '<link rel="icon" href="/favicon.ico" />' : '') +
+    '<script src="/index.bundle?platform=web&dev=true&hot=false" defer></script>';
+  return html.replace('</head>', `${tags}</head>`);
 }
 
 // ---------------------------------------------------------------- assets

@@ -12,6 +12,9 @@
 //     `HMRClient` -> `expo/src/async-require/hmr.ts`
 import fs from 'node:fs';
 import path from 'node:path';
+import { builtinModules } from 'node:module';
+
+const NODE_BUILTINS = new Set(builtinModules);
 
 export type Resolution =
   | { type: 'sourceFile'; filePath: string }
@@ -28,6 +31,12 @@ export interface ResolverOptions {
   preferNativePlatform?: boolean;
   tsconfigPaths?: { baseUrl: string; paths: Record<string, string[]> } | null;
   aliases?: [RegExp, string][];
+  /** exact specifier aliases (Expo web: react-native -> react-native-web, ...) */
+  exactAliases?: Record<string, string>;
+  /** directory of Expo's node_modules shims (`@expo/cli/static/shims`), applied to resolved files */
+  shimsDir?: string | null;
+  /** browser bundles: Node.js built-ins resolve to a same-named package if installed, else an empty module (Expo) */
+  browserNodeBuiltins?: boolean;
   virtualModules?: Record<string, string>;
 }
 
@@ -41,8 +50,8 @@ export class ResolutionError extends Error {}
 export const ASSET_REGISTRY_VIRTUAL = '\0polyfill:assets-registry';
 
 export class Resolver {
-  readonly opts: Required<Omit<ResolverOptions, 'tsconfigPaths' | 'virtualModules'>> &
-    Pick<ResolverOptions, 'tsconfigPaths' | 'virtualModules'>;
+  readonly opts: Required<Omit<ResolverOptions, 'tsconfigPaths' | 'virtualModules' | 'exactAliases' | 'shimsDir' | 'browserNodeBuiltins'>> &
+    Pick<ResolverOptions, 'tsconfigPaths' | 'virtualModules' | 'exactAliases' | 'shimsDir' | 'browserNodeBuiltins'>;
   private assetExts: Set<string>;
   private statCache = new Map<string, 'f' | 'd' | null>();
   private realCache = new Map<string, string>();
@@ -139,6 +148,24 @@ export class Resolver {
     if (/^@react-native\/assets-registry\/registry(\.js)?$/.test(specifier)) {
       return { type: 'sourceFile', filePath: ASSET_REGISTRY_VIRTUAL };
     }
+    if (
+      this.opts.platform === 'web' &&
+      /node_modules[\\/]react-native-web[\\/]/.test(originModulePath) &&
+      specifier.includes('/modules/AssetRegistry')
+    ) {
+      return { type: 'sourceFile', filePath: ASSET_REGISTRY_VIRTUAL };
+    }
+    // Expo: Node.js built-ins in browser bundles
+    if (this.opts.browserNodeBuiltins && NODE_BUILTINS.has(specifier.replace(/^node:/, ''))) {
+      try {
+        return this.resolveMetro(specifier, originModulePath, isESMImport);
+      } catch {
+        return { type: 'empty' };
+      }
+    }
+    // Expo: per-platform exact aliases
+    const exact = this.opts.exactAliases?.[specifier];
+    if (exact) return this.postRewrite(this.resolveMetro(exact, originModulePath, isESMImport));
     // Expo: tsconfig paths
     const tsResult = this.resolveTsconfigPaths(specifier, originModulePath, isESMImport);
     if (tsResult) return this.postRewrite(tsResult);
@@ -155,7 +182,12 @@ export class Resolver {
 
   private postRewrite(result: Resolution): Resolution {
     if (result.type !== 'sourceFile') return result;
-    if (result.filePath.replaceAll('\\', '/').endsWith('/react-native/Libraries/Utilities/HMRClient.js')) {
+    const normalized = result.filePath.replaceAll('\\', '/');
+    if (this.opts.shimsDir && normalized.includes('/node_modules/')) {
+      const shim = path.join(this.opts.shimsDir, normalized.replace(/.*node_modules\//, ''));
+      if (this.stat(shim) === 'f') return { type: 'sourceFile', filePath: shim };
+    }
+    if (this.opts.platform !== 'web' && normalized.endsWith('/react-native/Libraries/Utilities/HMRClient.js')) {
       return this.resolveMetro('expo/src/async-require/hmr.ts', path.join(this.opts.projectRoot, 'package.json'), false);
     }
     return result;

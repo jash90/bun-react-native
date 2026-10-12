@@ -14,6 +14,7 @@ import { getAssetData } from './assets';
 import { ASSET_REGISTRY_VIRTUAL } from './resolver';
 import { ASSET_REGISTRY_SRC, createProject, listContextFiles, type Project } from './shared';
 import { REQUIRE_CONTEXT_PREFIX } from './transform-worker';
+import { transformCss } from './web';
 
 const EMPTY_MODULE = '\0empty';
 const ASSET_PREFIX = '\0asset:';
@@ -59,7 +60,7 @@ export class DevGraph {
   private building: Promise<void> | null = null;
   private assetFiles = new Map<string, string[]>();
 
-  constructor(opts: { projectRoot: string; platform: 'ios' | 'android'; entryFile: string }) {
+  constructor(opts: { projectRoot: string; platform: 'ios' | 'android' | 'web'; entryFile: string }) {
     this.project = createProject({ projectRoot: opts.projectRoot, platform: opts.platform, dev: true });
     this.entryFile = opts.entryFile;
   }
@@ -133,8 +134,17 @@ export class DevGraph {
     } else if (key.startsWith(ASSET_PREFIX)) {
       const data = getAssetData(this.assetFiles.get(key)!, this.project.projectRoot);
       const { files, ...publicData } = data;
-      mod.code = `module.exports = require(_dependencyMap[0], "@react-native/assets-registry/registry").registerAsset(${JSON.stringify(publicData)});`;
-      specs = [{ key: ASSET_REGISTRY_VIRTUAL }];
+      if (this.project.isWeb) {
+        // like @expo/metro-config's asset transformer for web: a URL served by the dev server (/assets/...)
+        const uri = JSON.stringify(`${data.httpServerLocation}/${data.name}.${data.type}`);
+        mod.code =
+          data.width != null || data.height != null
+            ? `module.exports = { uri: ${uri}, width: ${data.width}, height: ${data.height}, toString() { return this.uri } };`
+            : `module.exports = ${uri};`;
+      } else {
+        mod.code = `module.exports = require(_dependencyMap[0], "@react-native/assets-registry/registry").registerAsset(${JSON.stringify(publicData)});`;
+        specs = [{ key: ASSET_REGISTRY_VIRTUAL }];
+      }
     } else if (key.startsWith(REQUIRE_CONTEXT_PREFIX)) {
       const spec: ContextSpec = JSON.parse(key.slice(REQUIRE_CONTEXT_PREFIX.length));
       mod.contextSpec = spec;
@@ -151,7 +161,8 @@ module.exports = ctx;`;
       if (ext === 'json') {
         mod.code = `module.exports = ${fs.readFileSync(key, 'utf8')};`;
       } else if (ext === 'css' || ext === 'scss' || ext === 'sass') {
-        mod.code = ''; // native: no CSS
+        // web: style tag injected by the module, replaced in place on HMR (Expo's development CSS wrapper)
+        mod.code = this.project.isWeb ? (await transformCss(this.project, key, { dev: true, server: false })).js : '';
       } else {
         const res = await this.project.transform(key, 'module', 'metro');
         mod.code = res.code ?? '';

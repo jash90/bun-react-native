@@ -98,7 +98,7 @@ export async function bundle(opts: BundleOptions): Promise<BundleResult> {
         throw new Error(`Unknown virtual module ${args.path}`);
       });
 
-      build.onLoad({ filter: /.*/, namespace: 'rn-empty' }, () => ({ contents: '', loader: 'js' }));
+      build.onLoad({ filter: /.*/, namespace: 'rn-empty' }, () => ({ contents: 'module.exports = {};', loader: 'js' })); // CommonJS like Metro's empty module: named imports are undefined
 
       build.onLoad({ filter: /.*/, namespace: 'rn-asset' }, (args) => {
         const data = getAssetData(assetFilesByPath.get(args.path)!, projectRoot);

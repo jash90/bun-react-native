@@ -46,6 +46,11 @@ jobs:
             --entry-file node_modules/expo-router/entry.js --bundle-output out/index.android.bundle \
             --assets-dest out/res --sourcemap-output out/index.android.bundle.map
           node_modules/hermes-compiler/hermesc/linux64-bin/hermesc -emit-binary -O -out out/index.android.hbc out/index.android.bundle
+      - name: Bun bundler web export (Expo Router static rendering)
+        run: |
+          bun run export:web
+          test -f dist/index.html && test -f dist/explore.html
+          grep -q '_expo/static/js/web/entry-' dist/index.html
 
   android:
     runs-on: ubuntu-latest

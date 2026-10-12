@@ -76,7 +76,7 @@ export function createInspectorProxy(opts: { projectRoot: string; port: number }
 
   return {
     /** HTTP + upgrade handling; returns null when the request is not for the inspector. */
-    async fetch(request: Request, srv: Server): Promise<Response | null | undefined> {
+    async fetch(request: Request, srv: Server<any>): Promise<Response | null | undefined> {
       const url = new URL(request.url);
       const { pathname, searchParams } = url;
       if (pathname === '/inspector/device') {
@@ -87,14 +87,14 @@ export function createInspectorProxy(opts: { projectRoot: string; port: number }
           name: searchParams.get('name') ?? 'Unknown device',
           app: searchParams.get('app') ?? 'Unknown app',
         };
-        return srv.upgrade(request, { data }) ? undefined : new Response('Upgrade failed', { status: 400 });
+        return srv.upgrade(request, { data } as any) ? undefined : new Response('Upgrade failed', { status: 400 });
       }
       if (pathname === '/inspector/debug') {
         const deviceId = searchParams.get('device');
         const pageId = searchParams.get('page');
         if (!deviceId || !pageId || !devices.has(deviceId)) return new Response('Unknown device or page', { status: 404 });
         const data = { kind: 'inspector', role: 'debugger', deviceId, pageId, sessionId: crypto.randomUUID() };
-        return srv.upgrade(request, { data }) ? undefined : new Response('Upgrade failed', { status: 400 });
+        return srv.upgrade(request, { data } as any) ? undefined : new Response('Upgrade failed', { status: 400 });
       }
       if (pathname === '/json' || pathname === '/json/list') return Response.json(pageList(url.host));
       if (pathname === '/json/version') return Response.json({ Browser: 'Mobile JavaScript', 'Protocol-Version': '1.1' });

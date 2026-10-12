@@ -35,7 +35,7 @@ Jak sprawdzić, czy poprawka już jest: `bun upgrade --canary` w osobnym środow
 | Problem | Status | Decyzja |
 |---|---|---|
 | `bun test` + React Native: `Unexpected typeof` (Flow w `react-native/index.js`), brak presetów Jest (`jest-expo`, `@react-native/jest-preset`), mocki natywne | [oven-sh/bun#16945](https://github.com/oven-sh/bun/issues/16945) otwarte, brak PR/planu; wsparcie Flow zamknięte ([#191](https://github.com/oven-sh/bun/issues/191)). Spike PoC: plugin Babel → Flow OK, ale interop ESM/CJS (`RN.View === undefined`) i brak mocków | Jest na runtime Bun (#6) zamiast `bun test` |
-| Bundler Buna zamiast Metro | brak formatu modułów Metro, HMR RN, pipeline Hermes, rejestru assetów; [oven-sh/bun#123](https://github.com/oven-sh/bun/issues/123) („react-native support”) otwarte | Metro zostaje (na runtime Bun) |
+| Bundler Buna „z pudełka” zamiast Metro | `Bun.build` nie ma formatu modułów Metro, HMR RN, pipeline Hermes, rejestru assetów; [oven-sh/bun#123](https://github.com/oven-sh/bun/issues/123) („react-native support”) otwarte | rozwiązane własnym bundlerem na API Buna: [`tools/bun-bundler/`](../../tools/bun-bundler/) ([BUNDLER.md](BUNDLER.md)); Metro zostaje jako wyjście awaryjne i do eksportu OTA |
 | Node na obrazach EAS / runnerach GitHub | obrazy zawierają Node; `oven-sh/setup-bun` działa na runtime Actions `node24` | Node obecny, ale nieużywany przez toolchain (shim) |
 
 ## Ryzyka niezweryfikowane w PoC

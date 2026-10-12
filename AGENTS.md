@@ -51,6 +51,7 @@ Docs: https://docs.expo.dev/eas/index.md
   changing it run `bun run test:tools` and check `hermesc` still compiles a minified bundle.
 - Bundling uses `tools/bun-bundler/` (Bun.build + Metro-equivalent resolver + Expo Babel transform) instead of Metro:
   native release builds call `tools/bun-bundler/cli.ts` via `plugins/with-bun-bundler.js`; `bun run start` is its dev
-  server (live reload, no Fast Refresh/debugger - use `bun run start:metro` for those). After changing it run
-  `bun run test:tools`, bundle both platforms and compile with `hermesc`. Details: `docs/bun-react-native/BUNDLER.md`.
+  server for iOS/Android/web (Metro module format, HMR/Fast Refresh, inspector proxy for React Native DevTools) and
+  `bun run export:web` its static web export; `bun run start:metro` / `web:metro` are the Metro escape hatch. After
+  changing it run `bun run test:tools`, bundle both platforms, compile with `hermesc` and check web in a browser. Details: `docs/bun-react-native/BUNDLER.md`.
 - `bun.lock` must reference the default registry (`""`); `bunfig.toml` pins `https://registry.npmjs.org/`.

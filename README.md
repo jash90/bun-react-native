@@ -3,7 +3,7 @@
 # bun react native
 
 Expo (SDK 57) / React Native 0.86 app whose whole toolchain runs on **Bun** instead of Node.js:
-package installs, Expo CLI, a Bun-based bundler replacing Metro (release builds + dev server), Babel, Jest, ESLint,
+package installs, Expo CLI, a Bun-based bundler replacing Metro (release builds, dev server with Fast Refresh and debugger, web), Babel, Jest, ESLint,
 TypeScript, CocoaPods/Gradle/Xcode build steps and CI.
 On the device the JavaScript still runs on Hermes.
 
@@ -29,8 +29,10 @@ Run scripts with `bun run …` / `bun expo …` — **never with `--bun`** (it p
 the shim for child processes; see `docs/bun-react-native/KNOWN-ISSUES.md`).
 
 ```bash
-bun run start        # Bun dev server (replaces Metro; live reload, no Fast Refresh)
-bun run start:metro  # Metro, when you need Fast Refresh or the debugger
+bun run start        # Bun dev server (replaces Metro): iOS, Android, web; Fast Refresh, React Native DevTools
+bun run web          # same server, opens the web app in the browser
+bun run export:web   # static web export (Expo Router) with the Bun bundler -> dist/
+bun run start:metro  # Metro (escape hatch; also web:metro)
 bun run ios          # expo run:ios --no-bundler (Debug build, uses the running dev server)
 bun run android      # expo run:android --no-bundler
 bun run typecheck
