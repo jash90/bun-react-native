@@ -141,7 +141,7 @@ Druga runda „przeanalizuj ponownie i popraw” — przegląd każdej różnicy
 2. Cmd+D nie dało się wysłać automatycznie (macOS: brak zgody na zdarzenia klawiatury dla `osascript`) — wymaga
    uprawnienia Dostępność albo ręcznego testu.
 
-## Etap 9 — tryb ścisły, `--unstable-hosted-native`, `--source-maps inline`, skrypt porównań
+## Etap 9 — tryb ścisły, `--unstable-hosted-native`, `--source-maps inline`, skrypt porównań (`2450197`)
 
 1. Ponowna analiza różnic z Metro: bundle Metro ma 983 dyrektywy `"use strict"` (po jednej na moduł ES), bundle Buna — 1.
    Bun łączy moduły w jedną nieścisłą funkcję IIFE, więc kod ES działał w trybie nieścisłym (inne `this` w funkcjach,
