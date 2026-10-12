@@ -126,10 +126,13 @@ jobs:
             # Separate TMPDIR per runtime: Metro's disk cache lives in $TMPDIR/metro-cache and is reused even with
             # --reset-cache, which would let the Bun run serve modules transformed by the Node run.
             mkdir -p out-$rt/assets tmp-$rt && rm -rf .expo/cache
-            if [ $rt = node ]; then R="bun run"; else R="bun --bun"; fi
+            # Node run: real Node from setup-node. Bun run: the tools/bin node -> Bun shim first on PATH (never
+            # `bun --bun`, see AGENTS.md). RN_BUNDLER=metro: compare Metro on Node with Metro on Bun - without it the
+            # preload sends export:embed to the Bun bundler, whose output is not Metro's.
+            if [ $rt = node ]; then P="$PATH"; else P="$PWD/tools/bin:$PATH"; fi
             # --minify false: what native Hermes release builds do (Gradle/Xcode); with minification the Bun run
             # intentionally differs (tools/bun/metro-minifier.js replaces terser).
-            TMPDIR=$PWD/tmp-$rt $R expo export:embed --platform android --dev false --minify false \
+            PATH="$P" RN_BUNDLER=metro TMPDIR=$PWD/tmp-$rt bun run expo export:embed --platform android --dev false --minify false \
               --entry-file "$(node -p "require.resolve('expo-router/entry')")" \
               --bundle-output out-$rt/index.android.bundle --assets-dest out-$rt/assets --reset-cache
           done
