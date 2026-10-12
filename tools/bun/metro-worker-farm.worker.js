@@ -1,14 +1,14 @@
 // A transform thread of tools/bun/metro-worker-farm.js: Node-compat shims (bunfig preload does not reach worker
-// threads), then Metro's own DeltaBundler/Worker.js `transform`.
+// threads), then Metro's own DeltaBundler/Worker.js `transform` (of the Metro copy whose WorkerFarm was replaced).
 'use strict';
 require('./node-compat.preload.js');
 const { parentPort } = require('node:worker_threads');
 
 let worker;
 
-parentPort.on('message', async ({ id, args }) => {
+parentPort.on('message', async ({ id, args, workerPath }) => {
   try {
-    worker ??= require(require.resolve('metro/private/DeltaBundler/Worker', { paths: [args[2]] }));
+    worker ??= require(workerPath);
     parentPort.postMessage({ id, result: await worker.transform(...args) });
   } catch (err) {
     // like jest-worker's processChild.reportError: constructor name, message, stack and own properties (loc,

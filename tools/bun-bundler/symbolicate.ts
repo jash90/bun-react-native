@@ -10,6 +10,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import { metroRequire } from '../bun/metro-require';
 
 export interface SymbolicateDeps {
   projectRoot: string;
@@ -36,7 +37,7 @@ export async function symbolicateRequest(body: unknown, deps: SymbolicateDeps): 
     });
     inputValidated = true;
     const { originalPositionFor } = req('@jridgewell/trace-mapping');
-    const { SourceMetadataMapConsumer } = req('metro-symbolicate/private/Symbolication');
+    const { SourceMetadataMapConsumer } = metroRequire(deps.projectRoot)('metro-symbolicate/private/Symbolication');
     const urls = new Set<string>(stack.map((f: any) => f.file).filter((f: any) => typeof f === 'string' && f.startsWith('http') && !f.endsWith('/debuggerWorker.js')));
     const consumers = new Map<string, any>();
 

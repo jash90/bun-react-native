@@ -10,6 +10,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 
 import { loadExpoMetroConfig } from './metro-config';
+import { metroRequire } from '../bun/metro-require';
 
 export interface MetroDependency {
   name: string;
@@ -62,9 +63,10 @@ export async function createMetroTransformer(opts: {
   const loaded = await loadExpoMetroConfig(projectRoot, { isExporting: false });
   const { config } = loaded;
   const own = new Map<string, Buffer>();
-  const Transformer = req('metro/private/DeltaBundler/Transformer').default;
-  const { getContextModuleTemplate } = req('metro/private/lib/contextModuleTemplates');
-  const isAssetFile = req('metro-resolver/private/utils/isAssetFile').default;
+  const mreq = metroRequire(projectRoot);
+  const Transformer = mreq('metro/private/DeltaBundler/Transformer').default;
+  const { getContextModuleTemplate } = mreq('metro/private/lib/contextModuleTemplates');
+  const isAssetFile = mreq('metro-resolver/private/utils/isAssetFile').default;
   const { materializeMap } = req('@expo/metro-config/build/serializer/packedMap');
 
   const sha1 = (b: Buffer) => crypto.createHash('sha1').update(b).digest('hex');

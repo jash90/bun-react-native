@@ -14,10 +14,19 @@ const WORKER = path.join(__dirname, 'metro-worker-farm.worker.js');
 /** transforms queued in a thread at once: one running, one ready to start */
 const MAX_IN_FLIGHT = 2;
 
+/** Replace Metro's WorkerFarm in Expo CLI's Metro and in the project's `metro`, when they are different copies */
 function install(projectRoot) {
-  const metroFarm = require(require.resolve('metro/private/DeltaBundler/WorkerFarm', { paths: [projectRoot] }));
+  const { expoMetroDir } = require('./metro-require');
+  const appMetro = path.dirname(require.resolve('metro/package.json', { paths: [projectRoot] }));
+  for (const dir of new Set([expoMetroDir(projectRoot), appMetro])) installIn(dir);
+}
+
+function installIn(metroDir) {
+  const metroFarm = require(path.join(metroDir, 'src', 'DeltaBundler', 'WorkerFarm.js'));
   if (metroFarm.default.isBunWorkerFarm) return;
   const MetroWorkerFarm = metroFarm.default;
+  // the thread runs the Worker.js of the same Metro copy
+  const workerPath = path.join(metroDir, 'src', 'DeltaBundler', 'Worker.js');
 
   class BunWorkerFarm extends MetroWorkerFarm {
     static isBunWorkerFarm = true;
@@ -68,7 +77,7 @@ function install(projectRoot) {
         thread.busy++;
         thread.ref();
         this._calls.set(job.id, { ...job, thread });
-        thread.postMessage({ id: job.id, args: job.args });
+        thread.postMessage({ id: job.id, args: job.args, workerPath });
       }
     }
 

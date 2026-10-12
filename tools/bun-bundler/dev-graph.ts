@@ -15,6 +15,7 @@ import { createMetroSerializer, loadMetroModule, metroGraphModules, type MetroMo
 import { createMetroTransformer, type MetroDependency, type MetroTransformer } from './metro-transformer';
 import { REQUIRE_CONTEXT_PREFIX } from './transform-worker';
 import { transformCss } from './web';
+import { metroRequire } from '../bun/metro-require';
 
 const EMPTY_MODULE = '\0empty';
 const MISSING_PREFIX = '\0missing:';
@@ -262,7 +263,7 @@ export class DevGraph {
     if (key.startsWith(ASSET_PREFIX)) return key.slice(ASSET_PREFIX.length);
     if (key.startsWith(REQUIRE_CONTEXT_PREFIX)) {
       const spec: ContextSpec = JSON.parse(key.slice(REQUIRE_CONTEXT_PREFIX.length));
-      const { deriveAbsolutePathFromContext } = this.project.projectRequire('metro/private/lib/contextModule');
+      const { deriveAbsolutePathFromContext } = metroRequire(this.project.projectRoot)('metro/private/lib/contextModule');
       return deriveAbsolutePathFromContext(spec.dir, { mode: spec.mode, recursive: spec.recursive, filter: spec.filter });
     }
     return key;
@@ -325,7 +326,7 @@ export class DevGraph {
     }
     if (mod.metro) {
       // metro/DeltaBundler/Serializers/helpers/js.js wrapModule + getModuleParams
-      const { addParamsToDefineCall } = this.project.projectRequire('metro-transform-plugins');
+      const { addParamsToDefineCall } = metroRequire(this.project.projectRoot)('metro-transform-plugins');
       const params: unknown[] = [this.idOf(mod), JSON.parse(depMap), mod.name];
       if (inverseDependencies) params.push(inverseDependencies);
       return addParamsToDefineCall(mod.metro.code, ...params);

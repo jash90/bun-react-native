@@ -9,6 +9,7 @@
 //   - `x_facebook_sources`: per-source function maps (Metro functionMapBabelPlugin), used by Hermes symbolication
 //   - `debugId` (+ the `//# debugId=` comment, see `debugIdFor`) for exports with external maps
 import path from 'node:path';
+import { metroRequire } from '../bun/metro-require';
 
 export interface RawMap {
   version: number;
@@ -74,7 +75,7 @@ export function concatPieces(pieces: MapPiece[], projectRequire: NodeRequire): {
 /** Metro's id of a require.context module: `<dir>?ctx=<sha1(mode recursive filter)>` */
 function contextModuleId(spec: string, projectRequire: NodeRequire): string {
   const ctx = JSON.parse(spec.slice(REQUIRE_CONTEXT_PREFIX.length));
-  const { deriveAbsolutePathFromContext } = projectRequire('metro/private/lib/contextModule');
+  const { deriveAbsolutePathFromContext } = metroRequire(path.dirname(projectRequire.resolve('./package.json')))('metro/private/lib/contextModule');
   return deriveAbsolutePathFromContext(ctx.dir, { mode: ctx.mode, recursive: ctx.recursive, filter: ctx.filter });
 }
 

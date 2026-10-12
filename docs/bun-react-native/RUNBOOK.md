@@ -78,15 +78,11 @@ Jeżeli masz już `metro.config.js`, dopisz tylko:
 ```js
 if (process.versions.bun) {
   config.transformer.unstable_workerThreads = false;
-  if (process.env.METRO_BUN_WORKERS !== '0') {
-    require('./tools/bun/metro-worker-farm').install(__dirname);
-  }
 }
 ```
-`metro-worker-farm` podmienia eksport `WorkerFarm` Metro (Transformer czyta go dopiero przy tworzeniu bundlera):
-transformacje idą przez `Worker.js` Metro w wątkach Buna, które najpierw ładują `node-compat.preload.js`. Wynik jest
-bajt w bajt taki jak z procesami jest-worker (`export:embed` iOS/Android, `export`, bundle dev), błędy transformacji
-mają ten sam kształt.
+Resztę (wątki Buna z shimami, `EXPO_PUBLIC_*` w kluczu cache, polyfill RSC w dev) robi preload
+`tools/bun/expo-cli.preload.js` przez `tools/bun-bundler/metro-on-bun.ts` dla każdego procesu Expo CLI — także gdy
+`metro.config.js` jest obcy (Sentry, Uniwind itd.); bez tej linii też jest poprawnie, bo `WorkerFarm` jest podmieniany.
 Nie podmieniaj `transformerPath` — Expo CLI owija niestandardowy transformer „supervising workerem”, co pod Bunem
 psuje `expo export --platform web` (`this._transformer.transformFile` undefined; sprawdzone w PoC).
 

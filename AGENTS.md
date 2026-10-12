@@ -45,8 +45,9 @@ Docs: https://docs.expo.dev/eas/index.md
 - `tools/bin/node` is a `node` → Bun shim and must be first on `PATH` (`node -p "process.versions.bun"` prints a version).
 - Run everything as `bun run <script>` / `bun expo …` / `bun x …`. **Never add `--bun`** and never set `[run] bun = true`:
   both put Bun's `node` alias (oven-sh/bun#40482) in front of the shim and break autolinking in Gradle/CocoaPods.
-- Keep `bunfig.toml`, `tools/bun/*.preload.js`, the `unstable_workerThreads` switch and the `metro-worker-farm` install in
-  `metro.config.js` (Metro transforms on Bun threads that load the preload themselves; `METRO_BUN_WORKERS=0` = jest-worker) — they make
+- Keep `bunfig.toml`, `tools/bun/*.preload.js` and the `unstable_workerThreads` switch in `metro.config.js`; the preload
+  installs `tools/bun-bundler/metro-on-bun.ts` in every Expo CLI process (Metro transforms on Bun threads with the shims,
+  EXPO_PUBLIC_* in cache keys, RSC dev polyfill; Metro internals from Expo CLI's copy via `tools/bun/metro-require.js`) — they make
   unminified Metro output byte-identical to Node's and let Jest run on Bun. Details: `docs/bun-react-native/RUNBOOK.md`.
 - `tools/bun/metro-minifier.js` replaces terser under Bun (only used when Metro minifies, i.e. web exports); after
   changing it run `bun run test:tools` and check `hermesc` still compiles a minified bundle.

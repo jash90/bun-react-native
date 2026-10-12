@@ -195,7 +195,7 @@ HISTORY (etap 12, faza 4).
 Buna (`metro-config-support.ts`), co daje wynik Metro z konstrukcji — sprawdzone w macierzy fazy 1: eksport web bajt w
 bajt z Node (terser), `expo serve` na Bunie z działającą Server Function, natywne `export:embed` bajt w bajt. RSC w
 `expo start` ma błąd Expo (KNOWN-ISSUES #17), ten sam na Node. Odtwarzanie RSC w bundlerze Buna (kroki niżej) nie
-daje 1:1 lepszego niż Metro, a kosztuje 15–22 dni.
+daje 1:1 lepszego niż Metro, a kosztuje 15–22 dni. Błąd #17 obchodzi toolchain (`metro-on-bun.ts`, polyfill w dev).
 
 Kontrakty, które musi spełnić nasz serwer, żeby działał niezmieniony kod Expo (`createServerComponentsMiddleware.js:81`,
 renderer `@expo/router-server/build/rsc/rsc-renderer.js`, eksport `MetroBundlerDevServer.js:718-829`):
@@ -222,8 +222,10 @@ kontrakty; zagnieżdżone akcje serwerowe nie działają na Hermesie (ograniczen
 
 ### Faza 6 — macierz weryfikacji (2–3 dni)
 
-**Stan (2026-10-12):** monorepo zrobione (2 błędy naprawione, HISTORY etap 12 faza 6). Fizyczny iPhone pominięty
-(zasada projektu), EAS Build i CI wymagają konta / zdalnego repo — poza zakresem lokalnym.
+**Stan (2026-10-12):** zrobione lokalnie — monorepo (2 błędy naprawione), Expo Go iOS/Android, Android Release z
+`expo-updates`, obcy projekt (Metro na Bunie bajt w bajt jak na Node, 2 błędy naprawione); HISTORY
+etap 12 faza 6. Fizyczny iPhone pominięty (zasada projektu), EAS Build i CI wymagają konta / zdalnego repo,
+tvOS/macOS — brak projektów z `react-native-tvos`/`react-native-macos`.
 
 Expo Go i dev na emulatorze Androida; fizyczny iPhone i Android; tvOS/macOS (projekty z `react-native-tvos` /
 `react-native-macos`); monorepo (workspace, `watchFolders`, `unstable_serverRoot`); EAS Build w chmurze z planem

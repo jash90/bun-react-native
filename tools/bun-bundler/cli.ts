@@ -21,6 +21,10 @@ const rest = index >= 0 ? [...argv.slice(0, index), ...argv.slice(index + 1)] : 
 const projectRoot = fs.realpathSync(process.cwd());
 const req = createRequire(path.join(projectRoot, 'package.json'));
 
+// Metro on Bun: shims in transform threads, EXPO_PUBLIC_* in cache keys, RSC dev polyfill (./metro-on-bun.ts) -
+// first, before any Expo CLI module is loaded (they keep references to the modules it patches)
+(await import('./metro-on-bun')).installMetroOnBun(projectRoot);
+
 if (process.env.RN_BUNDLER !== 'metro') {
   if (command === 'start') (await import('./expo-dev-server')).installBunBundlerDevServer(projectRoot);
   else if (command === 'export') (await import('./export')).installBunExportApp(projectRoot);
@@ -40,6 +44,7 @@ const args =
   onMetro && (command === 'export:embed' || command === 'bundle') && process.env.RN_BUNDLER_RESET_CACHE !== '1'
     ? rest.filter((a) => a !== '--reset-cache')
     : rest;
+
 
 // Expo CLI's bin, as if run as `expo <command> ...`
 const expoBin = req.resolve('@expo/cli'); // build/bin/cli

@@ -6,11 +6,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import { metroRequire } from '../bun/metro-require';
 
 export function createMetroEndpoints(projectRoot: string, config: any) {
   const req = createRequire(path.join(projectRoot, 'package.json'));
-  const { getAsset } = req('metro/private/Assets');
-  const mime = req(req.resolve('mime-types', { paths: [req.resolve('metro/package.json')] }));
+  const mreq = metroRequire(projectRoot);
+  const { getAsset } = mreq('metro/private/Assets');
+  const mime = mreq('mime-types');
   const watchFolders: string[] = config.watchFolders ?? [];
   const blockList: RegExp | RegExp[] | undefined = config.resolver?.blockList;
   const blocked = (file: string) => (Array.isArray(blockList) ? blockList.some((r) => r.test(file)) : !!blockList?.test(file));

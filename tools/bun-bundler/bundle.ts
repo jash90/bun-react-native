@@ -18,6 +18,7 @@ import { ASSET_REGISTRY_VIRTUAL } from './resolver';
 import { ASSET_REGISTRY_SRC, MISSING_MODULE_NAMESPACE, createProject, metafileOrder, missingModuleSource, requireContextSource, strictIife } from './shared';
 import { PRELUDE_SOURCE, concatPieces, debugIdFor, finalizeMap, serverRootOf, type FunctionMap, type MapPiece, type RawMap } from './sourcemap';
 import { REQUIRE_CONTEXT_PREFIX } from './transform-worker';
+import { metroRequire } from '../bun/metro-require';
 
 export { ASSET_EXTS, SOURCE_EXTS } from './shared';
 
@@ -261,7 +262,7 @@ export async function bundle(opts: BundleOptions): Promise<BundleResult> {
     }
     if (opts.sourcemapSourcesRoot != null) {
       written = { ...written, sources: [...written.sources] };
-      projectRequire('metro/private/lib/relativizeSourceMap').default(written, opts.sourcemapSourcesRoot);
+      metroRequire(projectRoot)('metro/private/lib/relativizeSourceMap').default(written, opts.sourcemapSourcesRoot);
     }
     fs.mkdirSync(path.dirname(opts.sourcemapOutput), { recursive: true });
     fs.writeFileSync(opts.sourcemapOutput, JSON.stringify(written));

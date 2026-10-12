@@ -420,7 +420,11 @@ faza 5.
 ### Faza 5 — zamknięta decyzją z § 2a
 
 RSC zostaje na Metro (runtime Buna, automatycznie); weryfikacja w macierzy fazy 1. Odtwarzanie RSC w bundlerze Buna
-(15–22 dni) nie daje lepszej zgodności niż Metro.
+(15–22 dni) nie daje lepszej zgodności niż Metro. Dokończenie: błąd Expo w `expo start` (KNOWN-ISSUES #17) obchodzi
+toolchain — polyfill `__webpack_get_script_filename__` (`tools/bun/rsc-dev-polyfill.js`) dopisywany do
+`serializer.getPolyfills` tylko w dev i tylko przy RSC (`reactServerFunctions` / `reactServerComponentRoutes` /
+`EXPO_UNSTABLE_SERVER_FUNCTIONS`, jak `instantiateMetro`), `BUN_RN_RSC_DEV_FIX=0` wyłącza. Fikstura: z obejściem
+Server Function renderuje się w `expo start` (Chromium), bez — `ReferenceError`; eksport web bez polyfillu.
 
 ### Faza 6 — macierz weryfikacji
 
@@ -438,6 +442,27 @@ RSC zostaje na Metro (runtime Buna, automatycznie); weryfikacja w macierzy fazy 
      `/node_modules/...` (404), bo publicPath `/assets` + ścieżka `../../node_modules` się skracała. Teraz publicPath
      dev Expo (`/assets/?unstable_path=.`) i kodowanie jak `getUniversalAssetData`: URL-e i bajty jak w Metro (także w
      zwykłym repo: `/assets/?unstable_path=.%2Fassets%2Fimages/...`).
+2. **Expo Go**: iOS (symulator) i Android (emulator, Expo Go zainstalowane przez `expo start --android`) z serwerem
+   Buna — aplikacja się ładuje, Fast Refresh działa (Android ~2,2 s).
+3. **Android Release z `expo-updates`** (Gradle, fikstura `wt-p6`): bundle z Buna, APK z `assets/app.manifest` =
+   Metro (43 assety); na emulatorze `isEmbeddedLaunch=true`, `updateId` = `id` manifestu z APK, PNG i SVG działają.
+   Po drodze środowisko: `OutOfMemoryError: Metaspace` w KSP (`expo-updates`) przy domyślnym `-Xmx2048m
+   -XX:MaxMetaspaceSize=512m` — build z `GRADLE_OPTS=-Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=1536m"` i
+   `ORG_GRADLE_PROJECT_reactNativeArchitectures=arm64-v8a`; zawieszony demon Gradle trzymał blokadę
+   `~/.gradle/caches/journal-1` (zakończony). Emulator Pixel_2_API_36 przestał odpowiadać po ~40 min (znane).
+4. **Metro na Bunie dla obcych `metro.config.js`** (zewnętrzny projekt: Nx monorepo,
+   Sentry `getSentryExpoConfig`, Uniwind, transformer SVG — toolchain sam przełącza na Metro): `export:embed` z
+   toolchainu ≠ Metro na Node w wymiarach i kolejności plików assetów `expo-router` — dwie przyczyny:
+   - config projektu nie wyłącza wątków Expo, a w wątkach nie ma shimu `readdir` (KNOWN-ISSUES #4/#5) →
+     `metro-on-bun.ts`: dla każdego procesu Expo CLI na Bunie (preload, `cli.ts`) `WorkerFarm` na wątkach Buna z shimami
+     i `EXPO_PUBLIC_*` w `cacheVersion` przez `withMetroMultiPlatformAsync` Expo (każdy config, który Expo składa) —
+     także `cli.ts` pomija `--reset-cache` bezpiecznie w obcych projektach;
+   - projekt ma dwie wersje Metro (`metro` 0.87 wciągnięte jako peer `*`, KNOWN-ISSUES #9, i 0.84.5 w `@expo/metro`,
+     której używa Expo CLI) → `tools/bun/metro-require.js`: Metro z łańcucha `@expo/cli` → `@expo/metro` → `metro` dla
+     `WorkerFarm` (wątek ładuje `Worker.js` tej samej kopii) i wszystkich `metro/private/...` bundlera.
+   Wynik: `export:embed` iOS i Android — bundle, mapa i assety bajt w
+   bajt jak Metro na Node 25.9, łącznie z debug ID Sentry. Hook musi się zainstalować przed załadowaniem modułów Expo
+   CLI (trzymają referencje do eksportów) — w `cli.ts` na samym początku.
 
 ---
 

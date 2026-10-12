@@ -26,6 +26,7 @@ import { createMetroEndpoints } from './metro-endpoints';
 import { symbolicateRequest } from './symbolicate';
 import { devClientMap } from './sourcemap';
 import { createWebDevHandler } from './web-dev';
+import { metroRequire } from '../bun/metro-require';
 
 export interface DevServerOptions {
   projectRoot: string;
@@ -152,8 +153,8 @@ export async function startDevServer(opts: DevServerOptions) {
     const q = url.searchParams;
     return {
       bundleType: 'bundle',
-      customResolverOptions: req('metro/private/lib/parseCustomResolverOptions').default(q),
-      customTransformOptions: req('metro/private/lib/parseCustomTransformOptions').default(q),
+      customResolverOptions: metroRequire(projectRoot)('metro/private/lib/parseCustomResolverOptions').default(q),
+      customTransformOptions: metroRequire(projectRoot)('metro/private/lib/parseCustomTransformOptions').default(q),
       dev: q.get('dev') !== 'false',
       entryFile,
       minify: q.get('minify') === 'true',

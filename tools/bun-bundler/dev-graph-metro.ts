@@ -8,6 +8,7 @@ import { createRequire } from 'node:module';
 
 import type { ContextParams, MetroDependency, MetroTransformer } from './metro-transformer';
 import { listContextFiles, type ContextSpec } from './shared';
+import { metroRequire } from '../bun/metro-require';
 
 export interface MetroModuleData {
   /** Metro module path: file, `\0virtual`, `<dir>?ctx=<hash>` */
@@ -36,8 +37,9 @@ export function createMetroSerializer(opts: { projectRoot: string; platform: str
   const { projectRoot, platform, transformer } = opts;
   const config = transformer.config;
   const req = createRequire(path.join(projectRoot, 'package.json'));
-  const CountingSet = req('metro/private/lib/CountingSet').default;
-  const countLines = req('metro/private/lib/countLines').default;
+  const mreq = metroRequire(projectRoot);
+  const CountingSet = mreq('metro/private/lib/CountingSet').default;
+  const countLines = mreq('metro/private/lib/countLines').default;
   const createModuleId = metroModuleId(projectRoot, config);
   let preModules: Promise<any[]> | null = null;
 
@@ -52,7 +54,7 @@ export function createMetroSerializer(opts: { projectRoot: string; platform: str
 
   /** metro/lib/getPrependedScripts: prelude + the module system and polyfills transformed as scripts */
   async function prepend(): Promise<any[]> {
-    const getPreludeCode = req('metro/private/lib/getPreludeCode').default;
+    const getPreludeCode = mreq('metro/private/lib/getPreludeCode').default;
     const code = getPreludeCode({
       isDev: transformer.dev,
       globalPrefix: config.transformer.globalPrefix,
@@ -79,9 +81,9 @@ export function createMetroSerializer(opts: { projectRoot: string; platform: str
 
   function options(url: string) {
     // Server._processRequest + _parseOptions
-    const parse = req('metro/private/lib/parseBundleOptionsFromBundleRequestUrl').default;
-    const splitBundleOptions = req('metro/private/lib/splitBundleOptions').default;
-    const toNormalUrl = req(req.resolve('jsc-safe-url', { paths: [req.resolve('metro/package.json')] })).toNormalUrl;
+    const parse = mreq('metro/private/lib/parseBundleOptionsFromBundleRequestUrl').default;
+    const splitBundleOptions = mreq('metro/private/lib/splitBundleOptions').default;
+    const toNormalUrl = mreq('jsc-safe-url').toNormalUrl;
     const { bundleType: _bundleType, ...bundleOptions } = parse(toNormalUrl(url), new Set(config.resolver.platforms));
     const split = splitBundleOptions(bundleOptions);
     return split as { serializerOptions: any; transformOptions: any; graphOptions: any; entryFile: string };
@@ -114,7 +116,7 @@ export function createMetroSerializer(opts: { projectRoot: string; platform: str
       const graph = { dependencies: new Map(modules.map((m) => [m.path, moduleObject(m)])), entryPoints: new Set([entryFile]), transformOptions };
       const serializer =
         config.serializer.customSerializer ||
-        ((e: string, p: any[], g: any, o: any) => req('metro/private/lib/bundleToString').default(req('metro/private/DeltaBundler/Serializers/baseJSBundle').default(e, p, g, o)).code);
+        ((e: string, p: any[], g: any, o: any) => mreq('metro/private/lib/bundleToString').default(mreq('metro/private/DeltaBundler/Serializers/baseJSBundle').default(e, p, g, o)).code);
       const bundle = await serializer(entryFile, prependModules, graph, {
         asyncRequireModulePath: req.resolve(config.transformer.asyncRequireModulePath),
         processModuleFilter: config.serializer.processModuleFilter,
@@ -138,7 +140,7 @@ export function createMetroSerializer(opts: { projectRoot: string; platform: str
       const sorted = [...graph.dependencies.values()];
       for (const m of sorted) createModuleId(m.path);
       sorted.sort((a: any, b: any) => createModuleId(a.path) - createModuleId(b.path));
-      const { sourceMapStringNonBlocking } = req('metro/private/DeltaBundler/Serializers/sourceMapString');
+      const { sourceMapStringNonBlocking } = mreq('metro/private/DeltaBundler/Serializers/sourceMapString');
       const map = await sourceMapStringNonBlocking([...(serializerOptions.modulesOnly ? [] : prependModules), ...sorted], {
         excludeSource: serializerOptions.excludeSource,
         processModuleFilter: config.serializer.processModuleFilter,
