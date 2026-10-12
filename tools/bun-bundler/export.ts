@@ -15,7 +15,8 @@ import path from 'node:path';
 import { bundle } from './bundle';
 import { exportDomComponents } from './dom';
 import { loadProjectEnv } from './env';
-import { expoHelpers, patchExpoCliModule, usesReactServerComponents, type ExportFiles } from './expo-helpers';
+import { expoHelpers, patchExpoCliModule, type ExportFiles } from './expo-helpers';
+import { usesMetroEngine } from './metro-config-support';
 import { getBaseUrl, getExpoConfig } from './shared';
 import { appendDebugId, debugIdFor } from './sourcemap';
 import { md5 } from './web';
@@ -160,7 +161,7 @@ export async function exportAppAsync(opts: ExportOptions) {
  * `export/exportApp` module re-pointed at exportAppAsync above. Projects with React Server Components keep Metro.
  */
 export function installBunExportApp(projectRoot: string) {
-  if (usesReactServerComponents(getExpoConfig(projectRoot))) return;
+  if (usesMetroEngine(projectRoot, 'export')) return;
   patchExpoCliModule(projectRoot, 'export/exportApp', {
     exportAppAsync: async (root: string, options: any) => {
       const unsupported = options.platforms.filter((p: string) => !['ios', 'android', 'web', 'tvos', 'macos'].includes(p));

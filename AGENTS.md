@@ -58,7 +58,8 @@ Docs: https://docs.expo.dev/eas/index.md
   SSR + API routes + loaders via expo-server, DOM components) and `bun run export` its `expo export` (EAS Update
   layout, web single/static/server); publish OTA with `bunx eas-cli update --skip-bundler`. Resolution follows Expo
   CLI's resolver chain (`tools/bun-bundler/resolver.ts`) and CSS Expo's transform worker (PostCSS, Sass); projects with
-  React Server Components are switched to Metro automatically (still on the Bun runtime). `bun run start:metro` / `web:metro` / `export:metro` are the Metro escape hatch.
+  React Server Components and `metro.config.js` customizations beyond `sourceExts`/`assetExts`/`babelTransformerPath`
+  are switched to Metro automatically (still on the Bun runtime; `tools/bun-bundler/metro-config-support.ts`). `bun run start:metro` / `web:metro` / `export:metro` are the Metro escape hatch.
   After changing it run `bun run test:tools`, bundle both platforms, compile with `hermesc`, compare `export` with
   `export:metro` and check web in a browser. Details: `docs/bun-react-native/BUNDLER.md`.
 - `.env` files are loaded by the bundler like Expo CLI (`.env.<mode from --dev>`, `tools/bun-bundler/env.ts`); Bun's own

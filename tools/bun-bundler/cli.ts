@@ -6,7 +6,8 @@
 //   export        - `expo export`: EAS Update layout, Hermes bytecode, web single/static/server (./export.ts)
 //   export:embed  - `expo export:embed`, what Xcode / Gradle run for release builds (./embed.ts); `bundle` is an alias
 //
-// Projects with React Server Components keep Metro for these commands (Expo's RSC is bound to Metro's runtime).
+// Projects with React Server Components or metro.config.js customizations the Bun bundler does not honour keep Metro
+// for these commands, still on the Bun runtime (./metro-config-support.ts).
 // Escape hatch: RN_BUNDLER=metro runs the same command with Metro.
 import fs from 'node:fs';
 import path from 'node:path';
@@ -32,9 +33,11 @@ if (process.env.RN_BUNDLER !== 'metro') {
 
 // Metro: Xcode and Gradle always pass --reset-cache, which makes every release build transform from scratch (~8 s).
 // Metro's cache keys cover file contents, transformer/Babel config and (metro.config.js) EXPO_PUBLIC_* values, so
-// export:embed keeps the cache like the Bun bundler does; RN_BUNDLER_RESET_CACHE=1 honours the flag.
+// export:embed keeps the cache like the Bun bundler does (also when the project is switched to Metro automatically);
+// RN_BUNDLER_RESET_CACHE=1 honours the flag.
+const onMetro = process.env.RN_BUNDLER === 'metro' || (await import('./metro-config-support')).metroEngineDecision(projectRoot).engine === 'metro';
 const args =
-  process.env.RN_BUNDLER === 'metro' && (command === 'export:embed' || command === 'bundle') && process.env.RN_BUNDLER_RESET_CACHE !== '1'
+  onMetro && (command === 'export:embed' || command === 'bundle') && process.env.RN_BUNDLER_RESET_CACHE !== '1'
     ? rest.filter((a) => a !== '--reset-cache')
     : rest;
 

@@ -11,7 +11,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { bundle } from './bundle';
-import { expoHelpers, patchExpoCliModule, usesReactServerComponents } from './expo-helpers';
+import { expoHelpers, patchExpoCliModule } from './expo-helpers';
+import { usesMetroEngine } from './metro-config-support';
 import { createProject, getRouterRoot } from './shared';
 import { appendDebugId } from './sourcemap';
 
@@ -42,7 +43,7 @@ interface EmbedOptions {
 
 /** Re-point Expo's export:embed module at the Bun bundler (its other exports, used by expo-updates, stay Metro's). */
 export function installBunExportEmbed(projectRoot: string) {
-  if (usesReactServerComponents(expoHelpers(projectRoot).req('@expo/config').getConfig(projectRoot, { skipSDKVersionRequirement: true }).exp)) return;
+  if (usesMetroEngine(projectRoot, 'export:embed')) return;
   patchExpoCliModule(projectRoot, 'export/embed/exportEmbedAsync', { exportEmbedAsync, exportEmbedInternalAsync });
 }
 

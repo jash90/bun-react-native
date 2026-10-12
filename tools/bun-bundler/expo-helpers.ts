@@ -76,10 +76,3 @@ export function patchExpoCliModule(projectRoot: string, module: string, override
   (req.cache as any)[target].exports = patched;
 }
 
-/**
- * React Server Components / server functions (beta in Expo): Expo's implementation is bound to Metro's runtime and
- * module ids, so these projects keep Metro as the bundler (still on the Bun runtime).
- */
-export function usesReactServerComponents(exp: any): boolean {
-  return !!(exp?.experiments?.reactServerFunctions || exp?.experiments?.reactServerComponentRoutes);
-}

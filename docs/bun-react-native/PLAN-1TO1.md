@@ -127,6 +127,12 @@ wymagają osobnej ścieżki w serializerze.
 
 ### Faza 2 — pełne `metro.config.js` (3–5 dni)
 
+**Stan (2026-10-12, po § 2a):** zrealizowane inaczej niż w tabeli niżej — bundler Buna obsługuje `sourceExts`,
+`assetExts` i `babelTransformerPath` (pluginy typu SVG/MDX), a każdą inną zmianę wykrywa
+(`tools/bun-bundler/metro-config-support.ts`) i przełącza komendę na Metro na runtime Buna, które daje wynik Metro z
+konstrukcji (sprawdzone: owinięty `customSerializer` = Metro na Node bajt w bajt). Pełne odtworzenie pozostałych pól w
+bundlerze Buna nie jest potrzebne do 1:1. Tabela niżej opisuje pierwotny zakres.
+
 Na fundamencie z fazy 1. Pola i miejsca odczytu w Metro/Expo (z analizy):
 
 | Grupa | Pola | Odczyt | Sposób |

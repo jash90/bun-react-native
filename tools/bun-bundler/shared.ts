@@ -8,6 +8,7 @@ import { createRequire } from 'node:module';
 import { Resolver } from './resolver';
 import type { FunctionMap, MapPiece } from './sourcemap';
 import { TransformPool } from './transform-pool';
+import { metroEngineDecision } from './metro-config-support';
 import type { TransformResponse } from './transform-worker';
 
 export const SOURCE_EXTS = ['ts', 'tsx', 'mjs', 'js', 'jsx', 'json', 'cjs', 'scss', 'sass', 'css'];
@@ -292,16 +293,19 @@ export function createProject(opts: ProjectOptions) {
   } catch {}
   const reactNativeHostPackage: string =
     isWeb ? 'react-native-web' : projectRequire('expo/internal/unstable-autolinking-exports').getSupportPackageForPlatform(platform) ?? 'react-native';
+  // metro.config.js: extensions and a custom Babel transformer (projects with other customizations use Metro)
+  const decision = metroEngineDecision(projectRoot);
+  const metroConfig = decision.engine === 'bun' ? decision.config : { sourceExts: SOURCE_EXTS, assetExts: ASSET_EXTS, babelTransformerPath: null };
   const resolver = new Resolver({
     projectRoot,
     platform,
-    sourceExts: isServer ? nodejsSourceExts(SOURCE_EXTS) : SOURCE_EXTS,
+    sourceExts: isServer ? nodejsSourceExts(metroConfig.sourceExts) : metroConfig.sourceExts,
     dev,
     server: isServer,
     reactNativeHostPackage,
     platformExtensions: OUT_OF_TREE_PLATFORM_EXTENSIONS[platform],
     autolinking: autolinkingInput(projectRoot, exp, platform),
-    assetExts: ASSET_EXTS,
+    assetExts: metroConfig.assetExts,
     tsconfigPaths: readTsconfigPaths(projectRoot),
     virtualModules: { [EXTERNAL_REQUIRE_POLYFILL]: '', [ENV_VARS_POLYFILL]: '' },
     ...(isWeb
@@ -352,6 +356,9 @@ export function createProject(opts: ProjectOptions) {
     preset: projectRequire('babel-preset-expo/package.json').version,
     metroConfig: projectRequire('@expo/metro-config/package.json').version,
     env: Object.entries(process.env).filter(([k]) => k.startsWith('EXPO_PUBLIC_')).sort(),
+    // like Expo's transformer cache key: the project's Babel config files (contents), and a custom transformer
+    babelConfig: projectRequire('@expo/metro-config/build/babel-transformer').getCacheKey({ projectRoot }),
+    babelTransformer: metroConfig.babelTransformerPath && [metroConfig.babelTransformerPath, Bun.hash(fs.readFileSync(metroConfig.babelTransformerPath)).toString(36)],
   });
   const stats = { cacheHits: 0, transformed: 0 };
 
@@ -366,7 +373,7 @@ export function createProject(opts: ProjectOptions) {
         return (await cached.json()) as TransformResponse;
       }
     }
-    const res = await pool.run({ filename, src: source, projectRoot, platform, dev, minify, type, format, customTransformOptions, transformProfile });
+    const res = await pool.run({ filename, src: source, projectRoot, platform, dev, minify, type, format, customTransformOptions, transformProfile, babelTransformerPath: metroConfig.babelTransformerPath });
     if (res.error) throw new Error(res.error);
     stats.transformed++;
     await Bun.write(cacheFile, JSON.stringify({ code: res.code, map: res.map, deps: res.deps, esmDeps: res.esmDeps, asyncDeps: res.asyncDeps, loaderReference: res.loaderReference, domComponentReference: res.domComponentReference, optionalDeps: res.optionalDeps, functionMap: res.functionMap }));

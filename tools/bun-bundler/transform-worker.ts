@@ -24,6 +24,8 @@ export interface TransformRequest {
   customTransformOptions: Record<string, string>;
   /** babel-preset-expo `unstable_transformProfile` (hermes-stable | hermes-canary | default) */
   transformProfile?: string;
+  /** metro.config.js `transformer.babelTransformerPath` when it is not Expo's (metro-config-support.ts) */
+  babelTransformerPath?: string | null;
 }
 
 export interface TransformResponse {
@@ -249,7 +251,7 @@ function expoPreTransform(req: TransformRequest, b: NonNullable<typeof babel>): 
   return req.src;
 }
 
-function transform(req: TransformRequest): TransformResponse {
+async function transform(req: TransformRequest): Promise<TransformResponse> {
   const b = load(req.projectRoot);
   // the options Metro passes to @expo/metro-config's babel-transformer (getTransformOptions of Expo's Metro config)
   const options = {
@@ -269,8 +271,10 @@ function transform(req: TransformRequest): TransformResponse {
     customTransformOptions: req.customTransformOptions,
   };
   const src = expoPreTransform(req, b);
-  // like Expo's transform worker: functionMapBabelPlugin fills metadata.metro.functionMap
-  const { ast, metadata } = b.transformer.transform({ filename: req.filename, src, options, plugins: [b.functionMapBabelPlugin] });
+  // like Expo's transform worker: functionMapBabelPlugin fills metadata.metro.functionMap; a custom Babel transformer
+  // (react-native-svg-transformer, ...) gets the same arguments and may be async (Metro awaits it)
+  const transformer = req.babelTransformerPath ? require(req.babelTransformerPath) : b.transformer;
+  const { ast, metadata } = await transformer.transform({ filename: req.filename, src, options, plugins: [b.functionMapBabelPlugin] });
   if (!ast) return { id: req.id, code: '' };
   const functionMap = metadata?.metro?.functionMap ?? null;
   const loaderReference = metadata?.loaderReference ? true : undefined;
@@ -324,11 +328,11 @@ function transform(req: TransformRequest): TransformResponse {
 
 // Only inside the Worker: modules import constants from this file, and a message listener on the main thread would
 // keep the bundler's process alive after its work is done.
-if (!Bun.isMainThread) self.onmessage = (event: MessageEvent<TransformRequest>) => {
+if (!Bun.isMainThread) self.onmessage = async (event: MessageEvent<TransformRequest>) => {
   const req = event.data;
   let res: TransformResponse;
   try {
-    res = transform(req);
+    res = await transform(req);
   } catch (e: any) {
     // Babel's message already carries the code frame; its parser stack is noise in the app's error overlay.
     const message = String(e?.message ?? e);

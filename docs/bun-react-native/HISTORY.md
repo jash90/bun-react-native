@@ -336,6 +336,25 @@ faza 5.
 7. **Wniosek** (PLAN-1TO1.md § 2a): 1:1 najtaniej daje Metro jako silnik na Bunie; fazy 1–5 planu dla bundlera Buna
    czekają na decyzję o domyślnym silniku.
 
+### Faza 2 — `metro.config.js`: co obsługuje bundler Buna, resztę robi Metro
+
+1. **Wykrywanie** (`metro-config-support.ts`): config użytkownika porównany z `getDefaultConfig(projectRoot)` Expo —
+   tablice w całości, funkcje po źródle (`getDefaultConfig` tworzy nowe domknięcia przy każdym wywołaniu, ale z tym
+   samym kodem: dwa wywołania = 0 różnic). Ignorowane ustawienia toolchainu Buna (`cacheVersion`,
+   `unstable_workerThreads`, minifikator `tools/bun/metro-minifier.js`, workery/cache/reporter). Ścieżka projektu
+   przez `realpath` (inaczej `/tmp` vs `/private/tmp` dawało fałszywe różnice `projectRoot`/`serverRoot`).
+2. **Obsługiwane w bundlerze Buna**: `resolver.sourceExts`/`assetExts` → resolver, `transformer.babelTransformerPath`
+   → worker (transformer może być asynchroniczny jak w Metro — worker stał się `async`). Klucz cache bundlera Buna
+   obejmuje teraz pliki configu Babel (`getCacheKey` babel-transformera Expo, jak klucz Metro) i plik transformera.
+3. **Reszta → Metro**: `start`, `export`, `export:embed` (także przez preload `expo run:*`) z komunikatem o przyczynie;
+   zastępuje osobny warunek RSC. `cli.ts` zachowuje cache Metro (bez `--reset-cache`) także przy automatycznym
+   przełączeniu.
+4. **Weryfikacja** (fikstura `wt-p6` bez RSC, `cli.ts` z repo): SVG w bundlerze Buna — `export:embed` iOS z komponentem
+   (`"#e33"` w kodzie, zbiór assetów = Metro), web w Chromium renderuje `<svg>` z `<circle fill="#e33">`, bundle dev
+   z `logo.svg` jako modułem JS; owinięty `serializer.customSerializer` → komunikat i wynik = Metro na Node bajt w
+   bajt. Aplikacja repo: bundle iOS identyczny jak przed zmianą, `hermesc` iOS/Android OK, `compare:export` 87 plików
+   / 0 różnic, web w Chromium bez błędów. Test `metro-config-support.test.ts` (4 przypadki).
+
 ---
 
 ## Jak powtórzyć weryfikację

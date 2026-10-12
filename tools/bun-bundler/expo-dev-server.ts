@@ -18,7 +18,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 
 import { startDevServer } from './dev-server';
-import { usesReactServerComponents } from './expo-helpers';
+import { usesMetroEngine } from './metro-config-support';
 import { loadExpoMetroConfig } from './metro-config';
 
 const MANIFEST_PATHS = ['/', '/manifest', '/index.exp'];
@@ -27,8 +27,8 @@ const NOT_HANDLED = 'x-bun-bundler-next';
 
 export function installBunBundlerDevServer(projectRoot: string) {
   const req = createRequire(path.join(projectRoot, 'package.json'));
-  // React Server Components keep Metro (see usesReactServerComponents)
-  if (usesReactServerComponents(req('@expo/config').getConfig(projectRoot, { skipSDKVersionRequirement: true }).exp)) return null;
+  // React Server Components and metro.config.js customizations the Bun bundler does not honour keep Metro
+  if (usesMetroEngine(projectRoot, 'expo start')) return null;
   const cli = (m: string) => req(`@expo/cli/build/src/${m}`);
   const { BundlerDevServer } = cli('start/server/BundlerDevServer');
   const connect = req(req.resolve('connect', { paths: [req.resolve('@expo/cli/package.json')] }));
