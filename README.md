@@ -60,3 +60,8 @@ bun run prebuild     # expo prebuild --clean (ios/ and android/ are generated, n
 | `.github/workflows/mobile-bun.yml` | CI: checks, Android and iOS release builds, Node-vs-Bun bundle determinism |
 
 Full documentation, verification results and the official docs snapshot: [`docs/bun-react-native/`](docs/bun-react-native/README.md).
+
+## License
+
+MIT, see [LICENSE](LICENSE). `docs/bun-react-native/sources/` holds copies of third-party documentation
+(Bun, Expo/EAS, Metro, React Native) kept for reference; they stay under their projects' own licenses.
