@@ -46,5 +46,7 @@ Docs: https://docs.expo.dev/eas/index.md
 - Run everything as `bun run <script>` / `bun expo …` / `bun x …`. **Never add `--bun`** and never set `[run] bun = true`:
   both put Bun's `node` alias (oven-sh/bun#40482) in front of the shim and break autolinking in Gradle/CocoaPods.
 - Keep `bunfig.toml`, `tools/bun/*.preload.js` and the `unstable_workerThreads` switch in `metro.config.js` — they make
-  Metro output byte-identical to Node's and let Jest run on Bun. Details: `docs/bun-react-native/RUNBOOK.md`.
+  unminified Metro output byte-identical to Node's and let Jest run on Bun. Details: `docs/bun-react-native/RUNBOOK.md`.
+- `tools/bun/metro-minifier.js` replaces terser under Bun (only used when Metro minifies, i.e. web exports); after
+  changing it run `bun run test:tools` and check `hermesc` still compiles a minified bundle.
 - `bun.lock` must reference the default registry (`""`); `bunfig.toml` pins `https://registry.npmjs.org/`.

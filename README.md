@@ -34,6 +34,7 @@ bun run android      # expo run:android
 bun run typecheck
 bun run lint
 bun run test         # Jest on the Bun runtime
+bun run test:tools   # bun test: Bun-only toolchain code in tools/
 bun run prebuild     # expo prebuild --clean (ios/ and android/ are generated, not committed)
 ```
 
@@ -43,9 +44,10 @@ bun run prebuild     # expo prebuild --clean (ios/ and android/ are generated, n
 |---|---|
 | `tools/bin/node` | `node` → Bun shim used by Podfile, Gradle, autolinking and Expo/RN scripts |
 | `bunfig.toml` | preloads the Node-compat shims, hoisted linker, npm registry |
-| `tools/bun/node-compat.preload.js` | sorts `fs.readdir*` like Node, so Metro output is byte-identical to Node's |
+| `tools/bun/node-compat.preload.js` | sorts `fs.readdir*` like Node, so unminified Metro output (what Hermes release builds use) is byte-identical to Node's |
 | `tools/bun/jest.preload.js` | lets Jest run on Bun (hides `vm.SyntheticModule`) |
-| `metro.config.js` | runs Metro transform workers as processes under Bun (preloads do not reach `worker_threads`) |
+| `metro.config.js` | runs Metro transform workers as processes under Bun (preloads do not reach `worker_threads`) and swaps terser for the Bun minifier |
+| `tools/bun/metro-minifier.js` | Metro minifier on Bun's native minifier (`Bun.build`), with terser fallback; tests: `bun run test:tools` |
 | `plugins/with-bun-xcode-env.js` | config plugin: `ios/.xcode.env` → `NODE_BINARY=$(command -v bun)` |
 | `eas.json`, `eas-build-*` scripts | Bun version for EAS Build and the shim on the EAS worker PATH (unverified on EAS) |
 | `.github/workflows/mobile-bun.yml` | CI: checks, Android and iOS release builds, Node-vs-Bun bundle determinism |

@@ -39,6 +39,7 @@ jobs:
       - run: bun run typecheck
       - run: bun run lint
       - run: bun run test --ci # Jest on the Bun runtime (tools/bun/jest.preload.js via bunfig.toml)
+      - run: bun run test:tools # bun test: Bun-only toolchain code (Metro minifier)
 
   android:
     runs-on: ubuntu-latest
@@ -110,7 +111,9 @@ jobs:
             # --reset-cache, which would let the Bun run serve modules transformed by the Node run.
             mkdir -p out-$rt/assets tmp-$rt && rm -rf .expo/cache
             if [ $rt = node ]; then R="bun run"; else R="bun --bun"; fi
-            TMPDIR=$PWD/tmp-$rt $R expo export:embed --platform android --dev false \
+            # --minify false: what native Hermes release builds do (Gradle/Xcode); with minification the Bun run
+            # intentionally differs (tools/bun/metro-minifier.js replaces terser).
+            TMPDIR=$PWD/tmp-$rt $R expo export:embed --platform android --dev false --minify false \
               --entry-file "$(node -p "require.resolve('expo-router/entry')")" \
               --bundle-output out-$rt/index.android.bundle --assets-dest out-$rt/assets --reset-cache
           done

@@ -139,3 +139,23 @@ Repo docelowe (aplikacja w katalogu głównym, pliki wg RUNBOOK). PATH bez prawd
 **Pułapka metodologiczna:** cache dyskowy Metro (`$TMPDIR/metro-cache`) jest wspólny dla Node i Buna i bywa
 używany mimo `--reset-cache` (`export:embed` Android zaraz po iOS: „Bundled 697ms”). Porównanie Node vs Bun bez
 izolacji cache może więc dać fałszywą zgodność. Job `bundle-determinism` w CI używa osobnego `TMPDIR` dla każdego runtime'u.
+
+## 9. Minifier Metro na Bunie (2026-10-12)
+
+Zimny cache (osobny `TMPDIR`), Bun 1.4.3, ten sam pipeline Metro; porównanie: terser (`METRO_BUN_MINIFIER=0`) vs minifier Buna.
+
+| Pomiar | terser | Bun |
+|---|---|---|
+| `export:embed` iOS z minifikacją: „Bundled” | 7,7 s | 6,4 s |
+| moduły zminifikowane przez Buna / terser (fallback) | — | 1446 / 80 (72× `"use strict"` poza wrapperem, 6× polyfille, 2× kształt wyniku) |
+| rozmiar JS / bytecode Hermes | 2 488 823 B / 3 439 874 B | 2 535 706 B / 3 433 950 B |
+| `hermesc` | 0 błędów | 0 błędów (przed ograniczeniem do `__d(...)`: 4 błędy `export` w polyfillach) |
+| sourcemapa: segmenty z nazwą trafiające w ten sam identyfikator w źródle | 80,37% | 78,48% |
+| eksport web: „Bundled” (2 przebiegi) | 10,5 / 10,7 s | 9,0 / 8,2 s |
+| eksport web: rozmiar JS | 2 137 740 B | 2 157 831 B |
+| eksport web w przeglądarce (Playwright): render, nawigacja `/explore`, animacja Reanimated, konsola | — | OK, 0 błędów / 0 ostrzeżeń |
+| `expo export --platform ios` (OTA) | 8,7 s, HBC 3 463 202 B | 8,7 s, HBC 3 463 201 B (bez minifikacji — Hermes) |
+| natywny build Release iOS (Xcode) | — | `--minify false` → minifier nieużywany; `BUILD SUCCEEDED` |
+
+Testy: `bun run test:tools` (5 testów `bun test`). Kontrola mutacyjna: bez odtwarzania dyrektywy → 3 testy czerwone;
+bez przesunięcia sourcemapy → 1 test czerwony.

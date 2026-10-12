@@ -15,7 +15,8 @@
     "test": "jest",
     "reset-project": "node ./scripts/reset-project.js",
     "eas-build-pre-install": "chmod +x tools/bin/node && set-env PATH \"$EAS_BUILD_WORKINGDIR/tools/bin:$PATH\"",
-    "eas-build-post-install": "node -e \"if (!process.versions.bun) { console.error('node is not Bun: tools/bin/node is not first on PATH'); process.exit(1) }\""
+    "eas-build-post-install": "node -e \"if (!process.versions.bun) { console.error('node is not Bun: tools/bin/node is not first on PATH'); process.exit(1) }\"",
+    "test:tools": "bun test"
   },
   "dependencies": {
     "@expo/ui": "~57.0.22",
@@ -62,7 +63,8 @@
     ],
     "testPathIgnorePatterns": [
       "/node_modules/",
-      "/docs/"
+      "/docs/",
+      "/tools/"
     ]
   }
 }

@@ -127,6 +127,27 @@ Uruchamiaj przez `bun run <script>` / `bun <bin>` (np. `bun expo start`). Kontro
 - Zmienne `NODE_OPTIONS` (np. `--max-old-space-size`, `--require`) **nie działają** pod Bunem — przenieś
   preloady do `bunfig.toml`. `BUN_OPTIONS` jest ignorowane, gdy `bunfig.toml` ma własny `preload`.
 
+## 5a. Metro na natywnych API Buna — minifier
+
+`tools/bun/metro-minifier.js` zastępuje terser (`transformer.minifierPath`, tylko gdy Metro działa na Bunie;
+wyłącznik: `METRO_BUN_MINIFIER=0`). Minifikuje każdy moduł przez `Bun.build` na pliku w pamięci i składa sourcemapę
+(`@jridgewell/remapping`). Do tersera wraca per moduł, gdy wynik mógłby mieć inną semantykę:
+
+| Przypadek | Powód | Co robi |
+|---|---|---|
+| `"use strict"` na początku wrappera `__d(function…)` | Bun usuwa dyrektywy funkcji (traktuje wejście jak ESM) → moduł przestałby być w trybie ścisłym | dyrektywa wstawiana z powrotem, kolumny sourcemapy przesuwane o 13 |
+| `"use strict"` gdzie indziej (zagnieżdżona dyrektywa / string) | nie da się bezpiecznie odtworzyć | terser |
+| polyfille / prelude (nie `__d(...)`) | Bun dokłada `export` → Hermes: „'export' statement requires module mode” | terser |
+| wynik z `import`/`export` albo w innym kształcie niż jedno wywołanie `__d(...)` | kontrola `Bun.Transpiler.scan` | terser |
+
+**Gdzie to działa:** tylko tam, gdzie Metro minifikuje — eksport web (`expo export --platform web`). Natywne buildy
+release z Hermesem (Xcode `react-native-xcode.sh`, Gradle `BundleHermesCTask`) i `expo export` dla OTA wywołują
+bundlowanie z `--minify false`, więc minifier nie bierze w nich udziału.
+
+**Czego nie przenosić na Buna:** transformacja Babel (~80% czasu bundlowania) — Bun nie wykonuje pluginów Babela
+(worklets/Reanimated, React Compiler, expo-router, codegen); resolver (rozszerzenia platform `.ios.js`, pole
+`react-native`), serializer, HMR i dev server — brak natywnego odpowiednika w Bunie; cache Metro z ciepłym cache to już ~0,45 s.
+
 ## 6. Prebuild, buildy natywne
 
 ```bash

@@ -8,6 +8,10 @@ preload = ["./tools/bun/node-compat.preload.js", "./tools/bun/jest.preload.js"]
 # Do not set `[run] bun = true`: like `--bun`, it puts Bun's `node` alias (oven-sh/bun#40482) in front of
 # tools/bin/node for child processes.
 
+[test]
+# `bun test` covers the Bun-only toolchain code in tools/; app tests (React Native) run on Jest.
+root = "./tools"
+
 [install]
 # Pin the public npm registry so bun.lock does not record a registry mirror from a personal ~/.npmrc.
 registry = "https://registry.npmjs.org/"

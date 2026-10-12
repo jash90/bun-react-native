@@ -21,6 +21,15 @@ Jak sprawdzić, czy poprawka już jest: `bun upgrade --canary` w osobnym środow
 | 10 | `NODE_OPTIONS=--require …` ignorowane przez Buna; `BUN_OPTIONS` ignorowane, gdy `bunfig.toml` ma `preload` | zachowanie Buna | preloady tylko w `bunfig.toml` | — | — |
 | 11 | `bunfig.toml` czytany tylko z cwd (nie z katalogów nadrzędnych) | zachowanie Buna | `bunfig.toml` w katalogu każdej aplikacji | — | — |
 
+## Minifikacja Bunem (tools/bun/metro-minifier.js)
+
+| # | Problem | Obejście w minifierze |
+|---|---|---|
+| 12 | `Bun.build` / `Bun.Transpiler` usuwają funkcyjne `"use strict"` (we wszystkich formatach: esm, cjs, iife) | dyrektywa odtwarzana na początku wrappera, sourcemapa przesunięta; inne wystąpienia → terser |
+| 13 | `Bun.build` traktuje wejście jak moduł ES i dla skryptów (polyfille Metro) dokłada `export` | tylko moduły `__d(function…)`, kontrola wyniku `Bun.Transpiler.scan` |
+| 14 | brak odpowiednika `mangle.reserved` w Bunie | zmiana nazw parametrów wrappera jest lokalna dla funkcji modułu (bez wpływu na zachowanie); `unstable_dependencyMapReservedName` = `null` w Expo |
+| 15 | Bundle z Bunem przy minifikacji różni się od bundla z Node (inny minifier) | porównania determinizmu robić z `--minify false` (tak bundlują natywne buildy z Hermesem) |
+
 ## Nie do obejścia rozsądnym kosztem
 
 | Problem | Status | Decyzja |
