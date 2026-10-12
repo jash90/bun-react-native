@@ -1,21 +1,20 @@
 // Development server for the Bun bundler (replaces the Metro dev server), built on Bun.serve.
 //
-// Speaks what the React Native runtime asks a packager for:
 //   GET  /status                       -> "packager-status:running" (RCTBundleURLProvider)
-//   GET  /<entry>.bundle?platform=..   -> dev bundle (built on demand, transform cache on disk)
+//   GET  /<entry>.bundle?platform=..   -> dev bundle in Metro module format (./dev-graph.ts)
 //   GET  /<entry>.map?platform=..      -> its source map
 //   GET  /assets/<dir>/<name>[@Nx].ext -> asset files (best scale fallback)
 //   POST /symbolicate                  -> stack frames mapped through the source map (LogBox)
-//   WS   /message                      -> packager messages; we broadcast {"method":"reload"} after edits
-//   WS   /hot                          -> HMR client registration + device logs (printed here)
-// Edits trigger a rebuild and a reload (live reload). Metro-style module hot replacement / Fast Refresh
-// needs Metro's module format and is not implemented.
+//   WS   /hot                          -> Metro HMR protocol: register-entrypoints, update-start/update/update-done,
+//                                         error; device logs are printed here. Drives Fast Refresh on the device.
+//   WS   /message                      -> packager messages; {"method":"reload"} when no HMR client is connected
+//   /json, /json/list, /json/version, /inspector/*, /open-debugger -> inspector proxy (./inspector.ts)
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import type { ServerWebSocket } from 'bun';
+import type { Server, ServerWebSocket } from 'bun';
 
-import { bundle } from './bundle';
+import { DevGraph, type HmrUpdate } from './dev-graph';
 
 export interface DevServerOptions {
   projectRoot: string;
@@ -23,57 +22,123 @@ export interface DevServerOptions {
   host?: string;
 }
 
-interface Built {
-  code: string;
-  map: string;
-  builtAt: number;
-  ms: number;
-}
+type Platform = 'ios' | 'android';
+type WsData = { kind: 'hot' | 'message' | 'inspector'; platform?: Platform; [k: string]: any };
 
 const IGNORED_DIRS = /(^|[\\/])(node_modules|\.git|ios|android|\.expo|dist|coverage)([\\/]|$)/;
 
 export async function startDevServer(opts: DevServerOptions) {
   const { projectRoot, port } = opts;
   const req = createRequire(path.join(projectRoot, 'package.json'));
+  const { TraceMap, FlattenMap, originalPositionFor, encodedMap } = req('@jridgewell/trace-mapping');
   const pkg = JSON.parse(fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf8'));
-  const entryFile = req.resolve(pkg.main ?? './index.js', { paths: [projectRoot] });
-  const outDir = path.join(projectRoot, 'node_modules', '.cache', 'bun-rn-bundler', 'dev-out');
-  fs.mkdirSync(outDir, { recursive: true });
+  const entryFile = path.relative(projectRoot, req.resolve(pkg.main ?? './index.js', { paths: [projectRoot] }));
 
-  const builds = new Map<string, Promise<Built>>(); // per platform
-  const messageSockets = new Set<ServerWebSocket<any>>();
+  const graphs = new Map<Platform, DevGraph>();
+  const lastBundleUrl = new Map<Platform, string>();
+  const hotClients = new Set<ServerWebSocket<WsData>>();
+  const messageClients = new Set<ServerWebSocket<WsData>>();
+  const mapCache = new Map<Platform, { raw: any; flat: any; trace: any }>();
+  let revision = 0;
 
-  const build = (platform: 'ios' | 'android'): Promise<Built> => {
-    let p = builds.get(platform);
-    if (!p) {
-      p = (async () => {
-        const t0 = performance.now();
-        const bundleOutput = path.join(outDir, `${platform}.bundle.js`);
-        const sourcemapOutput = path.join(outDir, `${platform}.bundle.map`);
-        await bundle({ projectRoot, entryFile, platform, dev: true, minify: false, bundleOutput, sourcemapOutput });
-        const built = {
-          code: fs.readFileSync(bundleOutput, 'utf8'),
-          map: fs.readFileSync(sourcemapOutput, 'utf8'),
-          builtAt: Date.now(),
-          ms: Math.round(performance.now() - t0),
-        };
-        console.log(`${platform === 'ios' ? 'iOS' : 'Android'} Bundled ${built.ms}ms with Bun`);
-        return built;
-      })();
-      builds.set(platform, p);
-      p.catch((e) => {
-        console.error(e?.message ?? e);
-        builds.delete(platform);
-      });
+  const graph = (platform: Platform) => {
+    let g = graphs.get(platform);
+    if (!g) {
+      g = new DevGraph({ projectRoot, platform, entryFile });
+      graphs.set(platform, g);
     }
-    return p;
+    return g;
   };
 
-  // ---- file watching -> rebuild -> reload
-  let timer: ReturnType<typeof setTimeout> | null = null;
-  // fs.watch also reports events for files whose content did not change (e.g. reads by other tools):
-  // only react to a new mtime/size.
+  // one serialization per platform at a time (bundle + parallel source map requests share it)
+  const inflight = new Map<Platform, Promise<string>>();
+  function serialize(platform: Platform, url: URL): Promise<string> {
+    let p = inflight.get(platform);
+    if (!p) {
+      p = serializeNow(platform, url).finally(() => inflight.delete(platform));
+      inflight.set(platform, p);
+    }
+    return p;
+  }
+
+  async function serializeNow(platform: Platform, url: URL) {
+    const g = graph(platform);
+    const t0 = performance.now();
+    const fresh = !g.has(path.resolve(projectRoot, entryFile));
+    const mapUrl = new URL(url);
+    mapUrl.pathname = url.pathname.replace(/\.bundle$/, '.map');
+    const result = await g.serialize(url.toString(), mapUrl.toString());
+    mapCache.delete(platform);
+    mapCache.set(platform, { raw: result.map, flat: null, trace: null });
+    lastBundleUrl.set(platform, url.toString());
+    const { cacheHits, transformed } = g.project.stats;
+    console.log(
+      `${platform === 'ios' ? 'iOS' : 'Android'} Bundled ${Math.round(performance.now() - t0)}ms with Bun` +
+        (fresh ? ` (${transformed} transformed, ${cacheHits} from cache)` : '')
+    );
+    return result.code;
+  }
+
+  function flatMap(platform: Platform) {
+    const entry = mapCache.get(platform);
+    if (!entry) return null;
+    if (!entry.trace) {
+      entry.trace = new FlattenMap(entry.raw);
+      entry.flat = encodedMap(entry.trace);
+    }
+    return entry;
+  }
+
+  // ---- HMR
+  function sendHot(platform: Platform, msg: object) {
+    const data = JSON.stringify(msg);
+    let sent = 0;
+    for (const ws of hotClients) {
+      if (ws.data.platform === platform) {
+        ws.send(data);
+        sent++;
+      }
+    }
+    return sent;
+  }
+
+  async function onFilesChanged(files: string[]) {
+    for (const [platform, g] of graphs) {
+      const base = lastBundleUrl.get(platform);
+      const urlFor = (ext: string) => (name: string) => {
+        const u = new URL(base ?? `http://localhost:${port}/index.bundle?platform=${platform}&dev=true`);
+        u.pathname = '/' + name.replace(/\.[^./]+$/, '') + ext;
+        return u.toString();
+      };
+      let update: HmrUpdate | null;
+      try {
+        update = await g.update(files, { bundleUrl: urlFor('.bundle'), mapUrl: urlFor('.map') });
+      } catch (e: any) {
+        const message = String(e?.message ?? e);
+        console.error(message);
+        sendHot(platform, { type: 'error', body: { type: 'TransformError', message, errors: [{ description: message }] } });
+        continue;
+      }
+      if (!update) continue;
+      mapCache.delete(platform); // positions of modified modules changed; rebuilt on next bundle/map request
+      const names = [...update.modified, ...update.added].map((m) => g.nameOf(m.module[0]));
+      const sent = sendHot(platform, { type: 'update-start', body: { isInitialUpdate: false } });
+      if (sent) {
+        sendHot(platform, { type: 'update', body: { ...update, revisionId: String(++revision), isInitialUpdate: false } });
+        sendHot(platform, { type: 'update-done' });
+        console.log(`[HMR ${platform}] ${names.join(', ')}`);
+      } else {
+        // no Fast Refresh client: reload the app instead
+        for (const ws of messageClients) ws.send(JSON.stringify({ version: 2, method: 'reload' }));
+        console.log(`[reload ${platform}] ${names.join(', ')}`);
+      }
+    }
+  }
+
+  // ---- file watching (fs.watch also reports reads/no-op events: react to new mtime/size only)
   const seen = new Map<string, string>();
+  const pending = new Set<string>();
+  let timer: ReturnType<typeof setTimeout> | null = null;
   const changed = (rel: string) => {
     try {
       const st = fs.statSync(path.join(projectRoot, rel));
@@ -82,71 +147,76 @@ export async function startDevServer(opts: DevServerOptions) {
       seen.set(rel, sig);
       return prev === undefined ? Date.now() - st.mtimeMs < 2000 : prev !== sig;
     } catch {
-      return seen.delete(rel); // deleted
+      return seen.delete(rel) || true; // deleted
     }
   };
   fs.watch(projectRoot, { recursive: true }, (_event, filename) => {
     if (!filename || IGNORED_DIRS.test(String(filename))) return;
     if (!changed(String(filename))) return;
+    pending.add(path.join(projectRoot, String(filename)));
     if (timer) clearTimeout(timer);
-    timer = setTimeout(async () => {
-      const platforms = [...builds.keys()] as ('ios' | 'android')[];
-      builds.clear();
-      console.log(`Change in ${filename}, rebuilding ${platforms.join(', ') || '(no clients yet)'}`);
-      try {
-        await Promise.all(platforms.map(build));
-        for (const ws of messageSockets) ws.send(JSON.stringify({ version: 2, method: 'reload' }));
-      } catch {
-        // error already printed; keep the previous app state
-      }
-    }, 60);
+    timer = setTimeout(() => {
+      const files = [...pending];
+      pending.clear();
+      onFilesChanged(files).catch((e) => console.error(e));
+    }, 30);
   });
 
-  const server = Bun.serve({
+  const { inspector } = await import('./inspector').then((m) => ({ inspector: m.createInspectorProxy({ projectRoot, port }) }));
+
+  const server: Server = Bun.serve<WsData, any>({
     port,
     hostname: opts.host ?? '0.0.0.0',
     idleTimeout: 0,
     async fetch(request, srv) {
       const url = new URL(request.url);
       const { pathname, searchParams } = url;
-      const platform = (searchParams.get('platform') ?? 'ios') as 'ios' | 'android';
+      const platform = (searchParams.get('platform') ?? 'ios') as Platform;
 
-      if (pathname === '/message' || pathname === '/hot') {
-        if (srv.upgrade(request, { data: { kind: pathname.slice(1) } })) return undefined as any;
+      if (pathname === '/hot' || pathname === '/message') {
+        if (srv.upgrade(request, { data: { kind: pathname.slice(1) as 'hot' | 'message' } })) return undefined as any;
         return new Response('WebSocket upgrade failed', { status: 400 });
       }
+      const inspectorResponse = await inspector.fetch(request, srv);
+      if (inspectorResponse !== null) return inspectorResponse;
+
       if (pathname === '/status') return new Response('packager-status:running');
       if (pathname.endsWith('.bundle')) {
         try {
-          const b = await build(platform);
-          return new Response(b.code, { headers: { 'Content-Type': 'application/javascript; charset=UTF-8' } });
+          const code = await serialize(platform, url);
+          return new Response(code, { headers: { 'Content-Type': 'application/javascript; charset=UTF-8' } });
         } catch (e: any) {
-          // RN shows this body in its red box
-          return Response.json({ type: 'TransformError', message: String(e?.message ?? e) }, { status: 500 });
+          const message = String(e?.message ?? e);
+          console.error(message);
+          return Response.json({ type: 'TransformError', message, errors: [{ description: message }] }, { status: 500 });
         }
       }
       if (pathname.endsWith('.map')) {
-        const b = await build(platform);
-        return new Response(b.map, { headers: { 'Content-Type': 'application/json' } });
+        if (!mapCache.has(platform)) await serialize(platform, new URL(url.toString().replace(/\.map(\?|$)/, '.bundle$1')));
+        return Response.json(flatMap(platform)!.flat);
       }
       if (pathname.startsWith('/assets/')) return serveAsset(projectRoot, pathname, platform);
       if (pathname === '/symbolicate' && request.method === 'POST') {
         const body = await request.json();
-        const b = await build(platform);
-        return Response.json(symbolicate(projectRoot, body.stack ?? [], b.map));
+        const p = (body.stack ?? []).map((f: any) => f?.file).find((f: string) => /platform=android/.test(f ?? '')) ? 'android' : platform;
+        if (!mapCache.has(p)) return Response.json({ stack: body.stack ?? [], codeFrame: null });
+        return Response.json(symbolicate(projectRoot, body.stack ?? [], flatMap(p)!.trace, originalPositionFor));
       }
       if (pathname === '/open-stack-frame' || pathname === '/open-url') return new Response('');
-      if (pathname === '/json' || pathname === '/json/list') return Response.json([]);
       return new Response('Not found', { status: 404 });
     },
     websocket: {
       open(ws) {
-        if (ws.data.kind === 'message') messageSockets.add(ws);
+        if (ws.data.kind === 'message') messageClients.add(ws);
+        else if (ws.data.kind === 'inspector') inspector.websocket.open(ws);
       },
-      close(ws) {
-        messageSockets.delete(ws);
+      close(ws, code, reason) {
+        hotClients.delete(ws);
+        messageClients.delete(ws);
+        if (ws.data.kind === 'inspector') inspector.websocket.close(ws, code, reason);
       },
       message(ws, raw) {
+        if (ws.data.kind === 'inspector') return inspector.websocket.message(ws, raw);
         if (ws.data.kind !== 'hot') return;
         let msg: any;
         try {
@@ -154,8 +224,14 @@ export async function startDevServer(opts: DevServerOptions) {
         } catch {
           return;
         }
-        if (msg.type === 'register-entrypoints') ws.send(JSON.stringify({ type: 'bundle-registered' }));
-        else if (msg.type === 'log') console.log(`[${msg.level ?? 'log'}]`, ...(msg.data ?? []));
+        if (msg.type === 'register-entrypoints') {
+          const entry = String(msg.entryPoints?.[0] ?? '');
+          ws.data.platform = (/[?&]platform=android/.test(entry) ? 'android' : 'ios') as Platform;
+          hotClients.add(ws);
+          ws.send(JSON.stringify({ type: 'bundle-registered' }));
+        } else if (msg.type === 'log') {
+          console.log(`[${ws.data.platform ?? 'app'} ${msg.level ?? 'log'}]`, ...(msg.data ?? []));
+        }
       },
     },
   });
@@ -173,10 +249,7 @@ function serveAsset(projectRoot: string, pathname: string, platform: string): Re
   const { dir, name, ext } = path.parse(abs);
   const base = name.replace(/@\d+(\.\d+)?x$/, '');
   const candidates = [abs, path.join(dir, `${base}.${platform}${ext}`), path.join(dir, `${base}${ext}`)];
-  for (const c of candidates) {
-    if (fs.existsSync(c)) return new Response(Bun.file(c));
-  }
-  // closest available scale
+  for (const c of candidates) if (fs.existsSync(c)) return new Response(Bun.file(c));
   const scales = fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => f.startsWith(base) && f.endsWith(ext)).sort() : [];
   if (scales.length) return new Response(Bun.file(path.join(dir, scales[scales.length - 1])));
   return new Response('Asset not found', { status: 404 });
@@ -184,24 +257,12 @@ function serveAsset(projectRoot: string, pathname: string, platform: string): Re
 
 // ---------------------------------------------------------------- symbolication
 
-let traceMapCache: { raw: string; tm: any } | null = null;
-
-function symbolicate(projectRoot: string, stack: any[], rawMap: string) {
-  const req = createRequire(path.join(projectRoot, 'package.json'));
-  const { TraceMap, originalPositionFor } = req('@jridgewell/trace-mapping');
-  if (!traceMapCache || traceMapCache.raw !== rawMap) traceMapCache = { raw: rawMap, tm: new TraceMap(rawMap) };
-  const tm = traceMapCache.tm;
+function symbolicate(projectRoot: string, stack: any[], trace: any, originalPositionFor: any) {
   const mapped = stack.map((frame: any) => {
     if (!frame?.file || !/\.bundle(\?|$)/.test(frame.file) || frame.lineNumber == null) return frame;
-    const pos = originalPositionFor(tm, { line: frame.lineNumber, column: Math.max(0, (frame.column ?? 1) - 1) });
+    const pos = originalPositionFor(trace, { line: frame.lineNumber, column: Math.max(0, (frame.column ?? 1) - 1) });
     if (pos.source == null) return frame;
-    return {
-      ...frame,
-      file: path.resolve(projectRoot, pos.source),
-      lineNumber: pos.line,
-      column: (pos.column ?? 0) + 1,
-      methodName: pos.name ?? frame.methodName,
-    };
+    return { ...frame, file: path.resolve(projectRoot, pos.source), lineNumber: pos.line, column: (pos.column ?? 0) + 1, methodName: pos.name ?? frame.methodName };
   });
   return { stack: mapped, codeFrame: null };
 }
