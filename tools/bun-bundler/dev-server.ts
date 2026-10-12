@@ -10,12 +10,14 @@
 //                                         error; device logs are printed here. Drives Fast Refresh on the device.
 //   WS   /message                      -> packager messages; {"method":"reload"} when no HMR client is connected
 //   /json, /json/list, /json/version, /inspector/*, /open-debugger -> inspector proxy (./inspector.ts)
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import type { Server, ServerWebSocket } from 'bun';
 
 import { DevGraph, type HmrUpdate } from './dev-graph';
+import { metroHmrClientUrl, reportBuild } from './dev-graph-metro';
 import { domComponentHtml, domRoot } from './dom';
 import { loadProjectEnv, projectEnvFiles, reloadProjectEnv } from './env';
 import { createMessageSocket, messageSocketData, type MessageSocketData } from './message-socket';
@@ -53,9 +55,8 @@ export interface FileChanges {
 
 type Platform = 'ios' | 'android' | 'web' | 'tvos' | 'macos';
 
-const PLATFORM_LABEL: Record<Platform, string> = { ios: 'iOS', android: 'Android', web: 'Web', tvos: 'tvOS', macos: 'macOS' };
 const platformOf = (url: string): Platform => (url.match(/[?&]platform=(android|web|tvos|macos)(&|$)/)?.[1] as Platform) ?? 'ios';
-type WsData = { kind: 'hot' | 'message' | 'inspector' | 'devtools-plugins' | 'events'; platform?: Platform; key?: string; message?: MessageSocketData; [k: string]: any };
+type WsData = { kind: 'hot' | 'message' | 'inspector' | 'devtools-plugins' | 'events'; platform?: Platform; key?: string; clientUrl?: string; message?: MessageSocketData; [k: string]: any };
 
 const IGNORED_DIRS = /(^|[\\/])(node_modules|\.git|ios|android|\.expo|dist|coverage)([\\/]|$)/;
 
@@ -72,16 +73,19 @@ export async function startDevServer(opts: DevServerOptions) {
   const pkg = JSON.parse(fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf8'));
   const entryFile = path.relative(projectRoot, req.resolve(pkg.main ?? './index.js', { paths: [projectRoot] }));
 
-  /** one dev graph per platform, plus one per DOM component (`<platform>|dom:<transform.dom>`) */
+  /**
+   * one dev graph per platform, plus one per DOM component (`<platform>|dom:<transform.dom>`) and per `dev=false` /
+   * `minify=true` bundle (`--no-dev`, `--minify`; Metro keeps a graph per transform options too)
+   */
   const graphs = new Map<string, DevGraph>();
   const lastBundleUrl = new Map<string, string>();
   const keyOf = (u: URL | string) => {
     const url = typeof u === 'string' ? new URL(u, 'http://localhost') : u;
     const dom = url.searchParams.get('transform.dom');
-    return platformOf(url.toString()) + (dom ? `|dom:${dom}` : '');
+    const mode = (url.searchParams.get('dev') === 'false' ? '|nodev' : '') + (url.searchParams.get('minify') === 'true' ? '|minify' : '');
+    return platformOf(url.toString()) + mode + (dom ? `|dom:${dom}` : '');
   };
   const platformOfKey = (key: string) => key.split('|')[0] as Platform;
-  const labelOf = (key: string) => PLATFORM_LABEL[platformOfKey(key)] + (key.includes('|dom:') ? ' DOM component' : '');
   const hotClients = new Set<ServerWebSocket<WsData>>();
   const messages = createMessageSocket<WsData>();
   const mapCache = new Map<string, { raw: any; flat: any; trace: any; graph: DevGraph }>();
@@ -99,8 +103,9 @@ export async function startDevServer(opts: DevServerOptions) {
     bundleUrl.pathname = url.pathname.replace(/\.map$/, '.bundle');
     const mapUrl = new URL(bundleUrl);
     mapUrl.pathname = bundleUrl.pathname.replace(/\.bundle$/, '.map');
-    const result = await g.serializeLazy(r.filePath, bundleUrl.toString(), mapUrl.toString());
-    lazyMaps.set(lazyKey(url), { raw: result.map, flat: null, trace: null, graph: g });
+    const result = await reportBuild(metroConfig.reporter, nextBuildID(), bundleDetails(url, r.filePath), false, (p) => g.setProgress(p), () => g.serializeLazy(r.filePath, bundleUrl.toString(), mapUrl.toString()));
+    // native: Metro's own served map (sourceMapString); symbolication reads the same map
+    lazyMaps.set(lazyKey(url), result.metro ? { raw: result.map, flat: result.map, trace: new FlattenMap(result.map), graph: g } : { raw: result.map, flat: null, trace: null, graph: g });
     return result.code;
   }
   /** the served map: Metro's shape (absolute sources, function maps, ignore list); symbolication uses `trace` */
@@ -122,7 +127,7 @@ export async function startDevServer(opts: DevServerOptions) {
       const dom = key.includes('|dom:') ? key.slice(key.indexOf('|dom:') + 5) : undefined;
       // DOM components: a web bundle of expo/dom/entry.js that registers the component (transform option `dom`)
       const entry = dom ? path.relative(projectRoot, req.resolve('expo/dom/entry.js')) : entryFile;
-      g = new DevGraph({ projectRoot, platform: platformOfKey(key), entryFile: entry, dom });
+      g = new DevGraph({ projectRoot, platform: platformOfKey(key), entryFile: entry, dom, dev: !key.includes('|nodev'), minify: key.includes('|minify') });
       graphs.set(key, g);
     }
     return g;
@@ -140,21 +145,31 @@ export async function startDevServer(opts: DevServerOptions) {
     return p;
   }
 
+  // metro/Server: build numbers (base 36 build ids) and the bundle details its reporter events carry
+  let buildNumber = 0;
+  const nextBuildID = () => (buildNumber++).toString(36);
+  function bundleDetails(url: URL, entryFile: string) {
+    const q = url.searchParams;
+    return {
+      bundleType: 'bundle',
+      customResolverOptions: req('metro/private/lib/parseCustomResolverOptions').default(q),
+      customTransformOptions: req('metro/private/lib/parseCustomTransformOptions').default(q),
+      dev: q.get('dev') !== 'false',
+      entryFile,
+      minify: q.get('minify') === 'true',
+      platform: q.get('platform'),
+    };
+  }
+
   async function serializeNow(key: string, url: URL) {
     const g = graph(key);
-    const t0 = performance.now();
-    const fresh = !g.built;
     const mapUrl = new URL(url);
     mapUrl.pathname = url.pathname.replace(/\.bundle$/, '.map');
-    const result = await g.serialize(url.toString(), mapUrl.toString());
+    // Expo's terminal reporter prints `iOS Bundled 123ms node_modules/expo-router/entry.js (1234 modules)`
+    const result = await reportBuild(metroConfig.reporter, nextBuildID(), bundleDetails(url, g.entryPath), false, (p) => g.setProgress(p), () => g.serialize(url.toString(), mapUrl.toString()));
     mapCache.delete(key);
-    mapCache.set(key, { raw: result.map, flat: null, trace: null, graph: g });
+    mapCache.set(key, result.metro ? { raw: result.map, flat: result.map, trace: new FlattenMap(result.map), graph: g } : { raw: result.map, flat: null, trace: null, graph: g });
     lastBundleUrl.set(key, url.toString());
-    const { cacheHits, transformed } = g.project.stats;
-    console.log(
-      `${labelOf(key)} Bundled ${Math.round(performance.now() - t0)}ms with Bun` +
-        (fresh ? ` (${transformed} transformed, ${cacheHits} from cache)` : '')
-    );
     return result.code;
   }
 
@@ -197,7 +212,8 @@ export async function startDevServer(opts: DevServerOptions) {
       };
       let update: HmrUpdate | null;
       try {
-        update = await g.update(files, { bundleUrl: urlFor('.bundle'), mapUrl: urlFor('.map') });
+        const clientUrl = [...hotClients].find((ws) => ws.data.key === key && ws.data.clientUrl)?.data.clientUrl;
+        update = await g.update(files, { bundleUrl: urlFor('.bundle'), mapUrl: urlFor('.map'), clientUrl });
       } catch (e: any) {
         const message = String(e?.message ?? e);
         console.error(message);
@@ -207,16 +223,15 @@ export async function startDevServer(opts: DevServerOptions) {
       if (!update) continue;
       mapCache.delete(key); // positions of modified modules changed; rebuilt on next bundle/map request
       for (const k of lazyMaps.keys()) if (k.startsWith(key + ' ')) lazyMaps.delete(k);
-      const names = [...update.modified, ...update.added].map((m) => g.nameOf(m.module[0]));
       const sent = sendHot(key, { type: 'update-start', body: { isInitialUpdate: false } });
       if (sent) {
-        sendHot(key, { type: 'update', body: { ...update, revisionId: String(++revision), isInitialUpdate: false } });
-        sendHot(key, { type: 'update-done' });
-        console.log(`[HMR ${labelOf(key).toLowerCase().replace(' dom component', ' dom')}] ${names.join(', ')}`);
+        // metro/HmrServer message shapes (IncrementalBundler revision ids, DeltaCalculator change ids); like Metro,
+        // nothing is printed for an update
+        sendHot(key, { type: 'update', body: { revisionId: g.isMetro ? crypto.randomBytes(8).toString('hex') : String(++revision), isInitialUpdate: false, ...update } });
+        sendHot(key, { type: 'update-done', body: { changeId: crypto.randomUUID() } });
       } else {
         // no Fast Refresh client: reload the app instead
         messages.broadcast('reload');
-        console.log(`[reload ${platform}] ${names.join(', ')}`);
       }
     }
   }
@@ -288,8 +303,8 @@ export async function startDevServer(opts: DevServerOptions) {
         const code = searchParams.get('modulesOnly') === 'true' ? await serializeLazy(url) : await serialize(url);
         return new Response(code, { headers: { 'Content-Type': 'application/javascript; charset=UTF-8' } });
       } catch (e: any) {
+        // printed by the reporter (bundling_error)
         const message = String(e?.message ?? e);
-        console.error(message);
         return Response.json({ type: 'TransformError', message, errors: [{ description: message }] }, { status: 500 });
       }
     }
@@ -381,9 +396,17 @@ export async function startDevServer(opts: DevServerOptions) {
           ws.data.platform = platformOf(entry);
           ws.data.key = keyOf(entry);
           hotClients.add(ws);
+          if (graph(ws.data.key).isMetro) {
+            // metro/HmrServer: an initial update (pending changes, usually none), then bundle-registered
+            ws.data.clientUrl = metroHmrClientUrl(entry);
+            ws.send(JSON.stringify({ type: 'update-start', body: { isInitialUpdate: true } }));
+            ws.send(JSON.stringify({ type: 'update', body: { revisionId: crypto.randomBytes(8).toString('hex'), isInitialUpdate: true, added: [], modified: [], deleted: [] } }));
+            ws.send(JSON.stringify({ type: 'update-done', body: {} }));
+          }
           ws.send(JSON.stringify({ type: 'bundle-registered' }));
         } else if (msg.type === 'log') {
-          console.log(`[${ws.data.platform ?? 'app'} ${msg.level ?? 'log'}]`, ...(msg.data ?? []));
+          // metro/HmrServer: client logs go to the reporter (Expo prints them with level badges)
+          if (metroConfig.config.server.forwardClientLogs) metroConfig.reporter.update({ type: 'client_log', level: msg.level, data: msg.data, mode: msg.mode });
         }
       },
     },

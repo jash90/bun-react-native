@@ -157,6 +157,13 @@ na symulatorze.
 
 ### Faza 3 — pełna zgodność serwera dev (3–4,5 dni)
 
+**Stan (2026-10-12):** iOS/Android zrobione — serwer dev Buna transformuje moduły `Transformer`em Metro (worker Expo
+na wątkach Buna, cache Metro) i serializuje jak `metro/Server` (moduły wstępne, fabryka ID, `customSerializer`,
+`sourceMapString`, `hmrJSBundle`): bundle, mapy, bundle leniwe, `dev=false&minify=true` i aktualizacje HMR bajt w bajt
+jak Metro; terminal jak Expo (zdarzenia reportera Metro); Atlas → Metro. Zostaje web (resolver: helpery
+`@babel/runtime/helpers/esm`, shimy `\0shim:react-native-web/...`; HTML z zasobów serializera `static`) i odpowiedź
+multipart z postępem bundlowania (`Accept: multipart/mixed`).
+
 | Krok | Co | Źródło | Szacunek |
 |---|---|---|---|
 | 3.1 | Graf dev na transformacji Expo z 1.2 (dziś nasza: CommonJS Babela zamiast żywych wiązań, bez komentarzy, ID nadawane przy współbieżnym ładowaniu — `dev-graph.ts:113,249,283`) — bundle dev 1:1 z Metro | `MC/transform-worker/metro-transform-worker.js:246-460` | 1–1,5 d |

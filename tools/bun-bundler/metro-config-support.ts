@@ -8,7 +8,7 @@
 //   anything else                -> Metro (custom transformerPath, serializer, resolveRequest, middleware, ...):
 //                                Expo CLI runs the command with Metro on the Bun runtime, which is 1:1 by
 //                                construction (docs/bun-react-native/PLAN-1TO1.md section 2a)
-// React Server Components also go to Metro. Functions are compared by source: getDefaultConfig creates new closures
+// React Server Components and Expo Atlas (EXPO_ATLAS) also go to Metro. Functions are compared by source: getDefaultConfig creates new closures
 // on every call, but with the same code. Synchronous on purpose (also used from tools/bun/expo-cli.preload.js), so a
 // config exported as a function or promise goes to Metro too.
 import fs from 'node:fs';
@@ -60,6 +60,8 @@ function decide(root: string): MetroEngineDecision {
   if (exp?.experiments?.reactServerFunctions || exp?.experiments?.reactServerComponentRoutes) {
     return { engine: 'metro', reasons: ['React Server Components'] };
   }
+  // Expo Atlas (attachAtlas) wraps Metro's serializer and server: Metro collects the graphs
+  if (req('@expo/cli/build/src/utils/env').env.EXPO_ATLAS) return { engine: 'metro', reasons: ['EXPO_ATLAS'] };
   const defaults = req('expo/metro-config').getDefaultConfig(root);
   const file = ['metro.config.js', 'metro.config.cjs'].map((f) => path.join(root, f)).find((f) => fs.existsSync(f));
   if (!file) return { engine: 'bun', config: honoured(defaults, defaults) };

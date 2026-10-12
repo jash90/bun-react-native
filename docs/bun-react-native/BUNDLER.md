@@ -20,7 +20,9 @@ Dzięki temu wynik ma ten sam układ co `expo export` — sprawdzone plik po pli
 | `transform-worker.ts` | pula `Worker`ów Buna z transformacją Babel Expo (`@expo/metro-config` babel-transformer z opcjami jak w Metro) poprzedzoną krokami transform-workera Expo (pliki `+api`/`+html`/`+middleware` wycinane z klienta, `.env`, `expo/virtual/env`, `expo/virtual/streams`, wejście komponentu DOM); dev: `import()` jako async require Metro (leniwe bundle); zależności opcjonalne (`try`/`.catch`) jak `allowOptionalDependencies`; metadane `loaderReference`/`expoDomComponentReference` | `metro-transform-worker` + `jest-worker` |
 | `assets.ts` | rekord assetu jak `metro/src/Assets.js` (warianty `img@2x.ios.png` zastępują ogólne, kolejność skal jak `readdir` Node, wymiary / skala), `fileHashes` Expo, moduł `registerAsset` | `metro/src/Assets.js` |
 | `shared.ts` | projekt (config Expo przez `@expo/config`, `routerRoot`, `baseUrl`), pula transformacji + cache, prelude/polyfille, moduł `require.context` 1:1 z szablonem Metro, kolejność grafu z `metafile` Buna | `metro-config`, `contextModuleTemplates` |
-| `dev-graph.ts` | graf modułów dev w formacie Metro (`__d(factory, id, deps, name)` + runtime `require` Expo), mapa sekcyjna, aktualizacje HMR, leniwe bundle `modulesOnly` dla `import()` (mapa `paths` jak `getModuleParams` Metro) | DeltaBundler + `metro-runtime` HMR, `lazy=true` |
+| `dev-graph.ts` | graf modułów dev w formacie Metro (`__d(factory, id, deps, name)` + runtime `require` Expo), aktualizacje HMR, leniwe bundle `modulesOnly` dla `import()`; iOS/Android: moduły z `metro-transformer.ts`, serializacja z `dev-graph-metro.ts` (bajt w bajt jak Metro), web: własna transformacja i mapa sekcyjna | DeltaBundler + `metro-runtime` HMR, `lazy=true` |
+| `metro-transformer.ts` | `Transformer` Metro (cache Metro w `cacheStores`, worker z `transformerPath` na wątkach Buna) z configiem Expo; opcje per plik jak `transformHelpers` Metro, `pruneCustomTransformOptions` Expo, moduły wirtualne i szablony `require.context` | `metro/DeltaBundler/Transformer` |
+| `dev-graph-metro.ts` | serializacja jak `metro/Server`: moduły wstępne (`getPrependedScripts`), wspólna fabryka ID serwera, kolejność `reorderGraph`, `customSerializer` z configu, mapa `sourceMapString`, HMR przez `hmrJSBundle` Expo, zdarzenia reportera (`bundle_build_*`) | `metro/Server`, `HmrServer` |
 | `dev-server.ts` | `Bun.serve`: `/status`, bundle, mapa, `/assets` (jak `getAsset` Metro), `/symbolicate`, WS `/message` i `/hot` (protokół HMR Metro → Fast Refresh), `fs.watch` | `metro` Server + `@expo/cli` dev server |
 | `inspector.ts` | proxy inspektora: `/json*`, WS `/inspector/device` i `/inspector/debug` (CDP), `/open-debugger`, front-end React Native DevTools | `@react-native/dev-middleware` |
 | `web.ts` | CSS jak transform-worker Expo (PostCSS z konfiguracji projektu, Sass, CSS Modules, lightningcss z `targets` z browserslist, lokalne i zewnętrzne `@import`; dev: `<style>` z HMR; natywnie: `{ unstable_styles: {} }`), assety web, `Bun.build` dla web: `client` (przeglądarka; z `asyncRoutes` dzielony na chunki ES), `render` (render.js dla Buna), `function` (CommonJS: trasy API, middleware, loadery, moduł SSR) | serializer web Metro |
@@ -103,7 +105,8 @@ Przewaga bundlera Buna to cache przeżywający `--reset-cache` buildów natywnyc
 Wnioski: [PLAN-1TO1.md § 2a](PLAN-1TO1.md#2a-ponowna-ocena-po-pomiarach-2026-10-12).
 
 Natywne buildy przekazują `--reset-cache`, więc Metro bundluje w nich zawsze na zimno (~7–8 s); bundler Bun korzysta
-z cache po treści — faza bundlowania w buildzie Xcode: **1,04 s**. Dev server: pierwszy bundle na zimno 7,2 s
+z cache po treści — faza bundlowania w buildzie Xcode: **1,04 s**. Dev server (iOS/Android po fazie 3: transformacja Metro): pierwszy bundle na zimno ~7 s jak Metro, z cache Metro
+~1,5 s; wcześniej (własna transformacja): pierwszy bundle na zimno 7,2 s
 (web 6,6 s), z cache 0,7–2 s; pierwszy SSR po zmianie pliku: przebudowa render.js (~1–5 s), potem ms.
 
 ## Weryfikacja (porównanie z Metro plik po pliku)

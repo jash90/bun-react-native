@@ -443,6 +443,7 @@ export function createProject(opts: ProjectOptions) {
     runBeforeMain,
     polyfillFiles,
     customTransformOptions,
+    transformProfile,
     transform,
     prelude,
     polyfillSources,

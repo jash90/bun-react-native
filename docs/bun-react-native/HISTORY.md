@@ -355,6 +355,44 @@ faza 5.
    bajt. Aplikacja repo: bundle iOS identyczny jak przed zmianą, `hermesc` iOS/Android OK, `compare:export` 87 plików
    / 0 różnic, web w Chromium bez błędów. Test `metro-config-support.test.ts` (4 przypadki).
 
+### Faza 3 — serwer dev 1:1 z Metro (iOS/Android)
+
+1. **Pomiar**: pierwszy bundle dev na zimno Bun 6,40 s vs Metro 6,43 s; ciepły restart 0,95 vs 0,40 s; po edycji
+   0,03 vs 0,45 s. Kod modułów różny (CommonJS Babela zamiast transformacji importów Expo), ID zgodne w 2 z 1704.
+2. **Transformacja Metro** (`metro-transformer.ts`): przechwycone wejście i wyjście Metro dla `explore.tsx` (hak w
+   `WorkerFarm` przez tymczasowy wpis w `metro.config.js`; `bun --preload` jest ignorowane, gdy `bunfig.toml` ma
+   preload — KNOWN-ISSUES #10). Worker Expo wywołany w Bunie z tymi danymi = kod, mapa, `functionMap`, zależności
+   identyczne. `Transformer` Metro z `getOrComputeSha1` (moduły wirtualne Expo przez `fileBuffer` jak
+   `getMetroBundlerWithVirtualModules`), opcje jak `calcTransformerOptions`, `pruneCustomTransformOptions` Expo
+   (nieeksportowane — skopiowane). Po podpięciu: 1700/1704 moduły z identycznym kodem.
+3. **Serializacja jak `metro/Server`** (`dev-graph-metro.ts`): przechwycone wywołanie `customSerializer` (opcje,
+   moduły wstępne: `__prelude__`, runtime Expo, polyfille, `\0polyfill:*`, `streams.js`). Graf w kształcie Metro w
+   kolejności `reorderGraph`, ID ze wspólnej fabryki serwera (`createModuleIdFactory`, jak w `Server`), URL przez
+   `parseBundleOptionsFromBundleRequestUrl` + `splitBundleOptions` (forma jsc-safe `sourceURL`), mapa przez
+   `sourceMapStringNonBlocking` posortowanych modułów (`_getSortedModules`), `getSource` z wyniku transformacji
+   (inaczej `sourcesContent` modułów wirtualnych był pusty). Pusty moduł → `resolver.emptyModulePath`,
+   `\0polyfill:assets-registry` przez Metro. Wynik: bundle i mapa iOS, bundle Androida (fabryka wspólna dla platform),
+   bundle leniwy i jego mapa — bajt w bajt jak Metro na tym samym porcie.
+4. **HMR jak `metro/HmrServer`**: aktualizacja początkowa przy `register-entrypoints`, `clientUrl` z parametrami
+   Metro, moduły przez `hmrJSBundle` Expo, `revisionId` 8 bajtów hex, `update-done` z `changeId` (UUID), aktualizacja
+   także gdy zmieniony plik grafu nie zmienił wyniku. Treść aktualizacji = Metro (poza losowym `revisionId`). Metro
+   wysyła więcej pustych aktualizacji, bo jego watcher zgłasza więcej zdarzeń na jeden zapis.
+5. **`--no-dev` / `--minify`**: graf per `dev`/`minify` (klucz `|nodev`, `|minify`), prelude z `isDev` transformacji.
+   Bundle `dev=false&minify=true` = Metro łącznie z `debugId` — `debugId` to hash kodu `baseJSBundle`, który zawiera
+   URL z portem, więc różni się między serwerami na różnych portach (sprawdzone: Bun na 8091 = Metro na 8091).
+6. **Terminal jak Expo**: zdarzenia `bundle_build_started` / `bundle_transform_progressed` / `bundle_build_done` /
+   `bundle_build_failed` + `bundling_error` do `reporter` z configu (`MetroTerminalReporter` Expo), `buildID` w base36,
+   postęp liczony jak `onDependencyAdd/Added` grafu Metro, logi klienta jako `client_log`; bez własnych linii
+   `[HMR …]`. Wynik: `iOS Bundled 6909ms node_modules/expo-router/entry.js (1705 modules)`, z cache `(1 module)` —
+   jak Metro (liczba modułów w Metro też zależy od przebiegu: 1530/1642/1705).
+7. **Atlas** (`EXPO_ATLAS`/`EXPO_UNSTABLE_ATLAS` przez `env` Expo) → Metro (`metro-config-support.ts`).
+8. **Symulator** (iPhone 17 Pro, `dev.poc.bunrn`, serwer Buna na 8081): aplikacja z bundla identycznego z Metro, Fast
+   Refresh zmiany tytułu, zakładka Explore, obraz z `/assets/?unstable_path=…`.
+9. **Web — niedokończone, wycofane**: z transformacją Metro 1279/1298 modułów identycznych; różnice w resolverze
+   (helpery `@babel/runtime/helpers/esm/*` dla importów ES, shimy `\0shim:react-native-web/...` jako moduły wirtualne) i
+   w HTML (Expo bierze skrypt i CSS z zasobów serializera `static` — 9 bloków `data-expo-css-hmr` vs 8). Web zostaje na
+   dotychczasowej ścieżce do czasu tych poprawek.
+
 ---
 
 ## Jak powtórzyć weryfikację

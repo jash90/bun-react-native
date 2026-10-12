@@ -54,7 +54,9 @@ Docs: https://docs.expo.dev/eas/index.md
   native release builds call `tools/bun-bundler/cli.ts` via `plugins/with-bun-bundler.js`; `cli.ts` runs Expo CLI's own
   `start` / `export` / `export:embed` commands with Expo's bundler modules re-pointed at Bun (`bun run start` is
   `expo start`: QR, Expo Go, dev builds, terminal keys; `tools/bun/expo-cli.preload.js` does the same for
-  `bun expo run:*` release pre-bundles); `bun run start` is its dev server for iOS/Android/web (Metro module format, lazy `import()` bundles, HMR/Fast Refresh, inspector proxy, web
+  `bun expo run:*` release pre-bundles); `bun run start` is its dev server for iOS/Android/web (Metro module format, lazy `import()` bundles, HMR/Fast Refresh, inspector proxy;
+  iOS/Android modules go through Metro's own Transformer and serializer, so dev bundles, maps and HMR updates are
+  Metro's byte for byte - `tools/bun-bundler/metro-transformer.ts`, `dev-graph-metro.ts`; web
   SSR + API routes + loaders via expo-server, DOM components) and `bun run export` its `expo export` (EAS Update
   layout, web single/static/server); publish OTA with `bunx eas-cli update --skip-bundler`. Resolution follows Expo
   CLI's resolver chain (`tools/bun-bundler/resolver.ts`) and CSS Expo's transform worker (PostCSS, Sass); projects with
