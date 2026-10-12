@@ -1,0 +1,11 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`renders with reanimated mocked by jest-expo preset 1`] = `
+<View>
+  <Text>
+    Hello Bun 
+    1
+  </Text>
+  <View />
+</View>
+`;

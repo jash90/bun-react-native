@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# `node` -> Bun shim for React Native native builds (CocoaPods, Gradle, Xcode script phases).
+#
+# Why a wrapper and not `ln -s $(which bun) node`:
+#   Bun invoked through a symlink named `node` drops the first positional argument after
+#   --eval/-p (oven-sh/bun#40482), which breaks `node --eval "require('expo/bin/autolinking')" ...`
+#   used by expo-modules-autolinking. Running Bun under its own name ("bun mode") keeps argv intact.
+#   Bun's node alias also rejects `node -v/--version`, so answer those explicitly.
+#
+# Remove once oven-sh/bun#40482 ships and `node -v` works in the alias mode.
+set -euo pipefail
+BUN_BIN="${BUN_BIN:-$(command -v bun)}"
+case "${1:-}" in
+  -v|--version) exec "$BUN_BIN" -p 'process.version' ;;
+esac
+# --no-env-file: real Node does not auto-load .env; Bun does in bun mode.
+exec "$BUN_BIN" --no-env-file "$@"

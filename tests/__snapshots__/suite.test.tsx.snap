@@ -1,0 +1,11 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`typical RN test patterns inline snapshot of a view tree 1`] = `
+<View
+  testID="root"
+>
+  <Text>
+    snap
+  </Text>
+</View>
+`;

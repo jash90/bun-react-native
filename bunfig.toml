@@ -1,0 +1,15 @@
+# Bun configuration for the React Native toolchain. See docs/bun-react-native/RUNBOOK.md.
+# Bun reads this file only from the current working directory - keep it next to package.json.
+
+# Node-compat shims loaded into every Bun process started here (CLI, Metro, Jest and forked workers;
+# NOT worker_threads - see metro.config.js).
+preload = ["./tools/bun/node-compat.preload.js", "./tools/bun/jest.preload.js"]
+
+# Do not set `[run] bun = true`: like `--bun`, it puts Bun's `node` alias (oven-sh/bun#40482) in front of
+# tools/bin/node for child processes.
+
+[install]
+# Pin the public npm registry so bun.lock does not record a registry mirror from a personal ~/.npmrc.
+registry = "https://registry.npmjs.org/"
+# The isolated linker duplicates Expo native modules (oven-sh/bun#29343).
+linker = "hoisted"

@@ -1,0 +1,118 @@
+# "100% Bun" CI for an Expo / React Native app.
+# `node` on PATH is the Bun shim (tools/bin/node), so CocoaPods, Gradle and Xcode never run real Node.
+# Runner images still ship Node (and setup-bun itself runs on the Actions node24 runtime) - it is
+# just never reached by the toolchain. The `assert-no-node` step proves it.
+name: mobile-bun
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+env:
+  BUN_VERSION: 1.4.3
+  EXPO_NO_TELEMETRY: 1
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - name: Put the node->bun shim first on PATH
+        run: |
+          chmod +x tools/bin/node
+          echo "$GITHUB_WORKSPACE/tools/bin" >> "$GITHUB_PATH"
+      - name: assert-no-node
+        run: |
+          test "$(command -v node)" = "$GITHUB_WORKSPACE/tools/bin/node"
+          node -p "process.versions.bun" # fails on real Node
+      - uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+      - run: bun install --frozen-lockfile
+      # No --bun anywhere: shebangs resolve `node` to the shim (= Bun). `bun --bun` would put Bun's buggy
+      # `node` alias (oven-sh/bun#40482) in front of the shim for child processes.
+      - run: bun run typecheck
+      - run: bun run lint
+      - run: bun run test --ci # Jest on the Bun runtime (tools/bun/jest.preload.js via bunfig.toml)
+
+  android:
+    runs-on: ubuntu-latest
+    needs: checks
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: |
+          chmod +x tools/bin/node
+          echo "$GITHUB_WORKSPACE/tools/bin" >> "$GITHUB_PATH"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          java-version: 17
+      - uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+      - run: bun install --frozen-lockfile
+      - run: bun expo prebuild --platform android --no-install
+      - run: ./gradlew assembleRelease
+        working-directory: android
+
+  ios:
+    runs-on: macos-latest
+    needs: checks
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: |
+          chmod +x tools/bin/node
+          echo "$GITHUB_WORKSPACE/tools/bin" >> "$GITHUB_PATH"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+      - run: bun install --frozen-lockfile
+      - run: bun expo prebuild --platform ios --no-install
+      # expo-modules-autolinking writes ios/.xcode.env.local with NODE_BINARY=<bun> during pod install
+      - run: pod install
+        working-directory: ios
+      - run: >
+          xcodebuild -workspace *.xcworkspace -scheme "$(basename *.xcworkspace .xcworkspace)"
+          -configuration Release -sdk iphonesimulator -destination 'generic/platform=iOS Simulator'
+          COMPILER_INDEX_STORE_ENABLE=NO build
+        working-directory: ios
+
+  # Guard against Bun-vs-Node output drift (oven-sh/bun#44947 and future regressions).
+  bundle-determinism:
+    runs-on: ubuntu-latest
+    needs: checks
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - uses: actions/setup-node@v4 # real Node used ONLY as the reference here
+        with:
+          node-version: 22
+      - run: bun install --frozen-lockfile
+      - name: Bundle with Node and with Bun, compare bytes
+        run: |
+          for rt in node bun; do
+            # Separate TMPDIR per runtime: Metro's disk cache lives in $TMPDIR/metro-cache and is reused even with
+            # --reset-cache, which would let the Bun run serve modules transformed by the Node run.
+            mkdir -p out-$rt/assets tmp-$rt && rm -rf .expo/cache
+            if [ $rt = node ]; then R="bun run"; else R="bun --bun"; fi
+            TMPDIR=$PWD/tmp-$rt $R expo export:embed --platform android --dev false \
+              --entry-file "$(node -p "require.resolve('expo-router/entry')")" \
+              --bundle-output out-$rt/index.android.bundle --assets-dest out-$rt/assets --reset-cache
+          done
+          cmp out-node/index.android.bundle out-bun/index.android.bundle
+          diff -r out-node/assets out-bun/assets

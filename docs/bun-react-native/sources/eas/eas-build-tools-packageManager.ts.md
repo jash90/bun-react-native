@@ -1,0 +1,228 @@
+---
+source: https://github.com/expo/eas-cli/blob/main/packages/build-tools/src/utils/packageManager.ts (GitHub: https://github.com/expo/eas-cli/blob/bb98f5beef0e098ee48f01b480df385e21f9a353/packages/build-tools/src/utils/packageManager.ts)
+fetched: 2026-10-12
+repo_sha: bb98f5beef0e098ee48f01b480df385e21f9a353
+---
+
+```ts
+import { errors } from '@expo/eas-build-job';
+import { type bunyan } from '@expo/logger';
+import * as PackageManagerUtils from '@expo/package-manager';
+import { type BuildStepEnv } from '@expo/steps';
+import spawnAsync from '@expo/turtle-spawn';
+import semver from 'semver';
+import { z } from 'zod';
+
+export enum PackageManager {
+  YARN = 'yarn',
+  NPM = 'npm',
+  PNPM = 'pnpm',
+  BUN = 'bun',
+}
+
+export function resolvePackageManager(
+  directory: string,
+  { env }: { env: BuildStepEnv }
+): PackageManager {
+  try {
+    const manager = PackageManagerUtils.resolvePackageManager(directory);
+    if (manager === 'npm') {
+      return PackageManager.NPM;
+    } else if (manager === 'pnpm') {
+      return PackageManager.PNPM;
+    } else if (manager === 'bun') {
+      return PackageManager.BUN;
+    } else if (manager === 'yarn') {
+      return PackageManager.YARN;
+    }
+  } catch {}
+
+  return resolveFallbackPackageManager(env) ?? PackageManager.YARN;
+}
+
+function parsePackageManagerEnvValue(
+  value: string | undefined,
+  envName: string,
+  errorCode: string
+): PackageManager | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const parsed = z.enum(PackageManager).safeParse(value);
+  if (parsed.success) {
+    return parsed.data;
+  }
+  const allowed = Object.values(PackageManager).join(', ');
+  throw new errors.UserError(
+    errorCode,
+    `Invalid ${envName} value "${value}" (expected one of: ${allowed}).`
+  );
+}
+
+export function resolveFallbackPackageManager(env: BuildStepEnv): PackageManager | undefined {
+  return parsePackageManagerEnvValue(
+    env.EAS_FALLBACK_PACKAGE_MANAGER,
+    'EAS_FALLBACK_PACKAGE_MANAGER',
+    'EAS_INVALID_FALLBACK_PACKAGE_MANAGER'
+  );
+}
+
+export function resolveOverridePackageManager(env: BuildStepEnv): PackageManager | undefined {
+  return parsePackageManagerEnvValue(
+    env.EAS_OVERRIDE_PACKAGE_MANAGER,
+    'EAS_OVERRIDE_PACKAGE_MANAGER',
+    'EAS_INVALID_OVERRIDE_PACKAGE_MANAGER'
+  );
+}
+
+export function resolveConfiguredPackageManager(
+  env: BuildStepEnv,
+  whenUnset: PackageManager
+): PackageManager {
+  return resolveOverridePackageManager(env) ?? resolveFallbackPackageManager(env) ?? whenUnset;
+}
+
+export function resolvePackageExec(
+  manager: PackageManager,
+  args: string[]
+): { command: string; args: string[] } {
+  switch (manager) {
+    case PackageManager.NPM:
+      return { command: 'npx', args: ['--yes', ...args] };
+    case PackageManager.BUN:
+      return { command: 'bun', args: ['x', ...args] };
+    case PackageManager.YARN:
+      return { command: 'npx', args: ['--yes', ...args] };
+    case PackageManager.PNPM:
+      return { command: 'pnpm', args: ['dlx', ...args] };
+  }
+}
+
+export function resolvePackageAdd(
+  manager: PackageManager,
+  packageSpec: string
+): { command: string; args: string[] } {
+  switch (manager) {
+    case PackageManager.NPM:
+      return { command: 'npm', args: ['install', '--no-audit', packageSpec] };
+    case PackageManager.BUN:
+      return { command: 'bun', args: ['add', packageSpec] };
+    case PackageManager.YARN:
+      return { command: 'yarn', args: ['add', packageSpec] };
+    case PackageManager.PNPM:
+      return { command: 'pnpm', args: ['add', packageSpec] };
+  }
+}
+
+export function resolvePackageInstall(
+  manager: PackageManager,
+  { production }: { production?: boolean } = {}
+): { command: string; args: string[] } {
+  switch (manager) {
+    case PackageManager.NPM:
+      return {
+        command: 'npm',
+        args: production ? ['install', '--no-audit', '--omit=dev'] : ['install', '--no-audit'],
+      };
+    case PackageManager.BUN:
+      return { command: 'bun', args: production ? ['install', '--production'] : ['install'] };
+    case PackageManager.YARN:
+      return { command: 'yarn', args: production ? ['install', '--production'] : ['install'] };
+    case PackageManager.PNPM:
+      return { command: 'pnpm', args: production ? ['install', '--prod'] : ['install'] };
+  }
+}
+
+/**
+ * Get the version of a package from the dist-tags.
+ * Returns null if the version cannot be resolved.
+ */
+export async function resolvePackageVersionAsync({
+  logger,
+  packageName,
+  distTag,
+}: {
+  logger: bunyan;
+  packageName: string;
+  distTag: string;
+}): Promise<string | null> {
+  try {
+    const { stdout } = await spawnAsync('npm', ['view', packageName, 'dist-tags', '--json'], {
+      stdio: 'pipe',
+    });
+    const distTags = JSON.parse(stdout);
+    if (distTag in distTags) {
+      return distTags[distTag];
+    }
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : String(e);
+    logger.warn(`Unable to resolve version for ${packageName}@${distTag}: ${message}`);
+  }
+  return null;
+}
+
+export function findPackagerRootDir(currentDir: string): string {
+  return PackageManagerUtils.resolveWorkspaceRoot(currentDir) ?? currentDir;
+}
+
+export async function isAtLeastNpm7Async(): Promise<boolean> {
+  const version = (await spawnAsync('npm', ['--version'], { stdio: 'pipe' })).stdout.trim();
+  return semver.gte(version, '7.0.0');
+}
+
+export function shouldUseFrozenLockfile({
+  env,
+  sdkVersion,
+  reactNativeVersion,
+}: {
+  env: Record<string, string | undefined>;
+  sdkVersion: string | undefined;
+  reactNativeVersion: string | undefined;
+}): boolean {
+  if (env.EAS_NO_FROZEN_LOCKFILE) {
+    return false;
+  }
+
+  if (sdkVersion && semver.lt(sdkVersion, '53.0.0')) {
+    // Before SDK 53 we could not have used frozen lockfile.
+    return false;
+  }
+
+  if (reactNativeVersion && semver.lt(reactNativeVersion, '0.79.0')) {
+    // Before react-native 0.79 we could not have used frozen lockfile.
+    return false;
+  }
+
+  // We either don't know expo and react-native versions,
+  // so we can try to use frozen lockfile, or the versions are
+  // new enough that we do want to use it.
+  return true;
+}
+
+const PackageJsonZ = z.object({
+  dependencies: z.record(z.string(), z.string()).optional(),
+  devDependencies: z.record(z.string(), z.string()).optional(),
+});
+
+export function getPackageVersionFromPackageJson({
+  packageJson,
+  packageName,
+}: {
+  packageJson: unknown;
+  packageName: string;
+}): string | undefined {
+  const parsedPackageJson = PackageJsonZ.safeParse(packageJson);
+  if (!parsedPackageJson.success) {
+    return undefined;
+  }
+
+  const version =
+    parsedPackageJson.data.dependencies?.[packageName] ??
+    parsedPackageJson.data.devDependencies?.[packageName];
+  if (!version) {
+    return undefined;
+  }
+
+  return semver.coerce(version)?.version;
+}
+```

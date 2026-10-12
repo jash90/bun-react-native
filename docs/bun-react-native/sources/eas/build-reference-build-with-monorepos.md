@@ -1,0 +1,26 @@
+---
+source: https://docs.expo.dev/build-reference/build-with-monorepos/ (GitHub: https://github.com/expo/expo/blob/fe4a2c8e7875d56283ab314a9b4a0da6b6df159d/docs/pages/build-reference/build-with-monorepos.mdx)
+fetched: 2026-10-12
+repo_sha: fe4a2c8e7875d56283ab314a9b4a0da6b6df159d
+---
+
+---
+title: Set up EAS Build with a monorepo
+hideTOC: true
+description: Learn how to set up EAS Build with a monorepo.
+---
+
+To set up EAS Build with a monorepo, you need to follow the standard process as described below:
+
+- Run all EAS CLI commands from the root of the app directory. For example, if your project exists inside your git repository at **apps/my-app**, then run `eas build` from there.
+- All files related to EAS Build, such as **eas.json** and **credentials.json**, should be in the root of the app directory. If you have multiple apps that use EAS Build in your monorepo, each app directory will have its own copy of these files.
+- **If you are building a project that uses [Continuous Native Generation (CNG)](/workflow/continuous-native-generation/) in a monorepo**, see [Working with Monorepos](/guides/monorepos) guide.
+- If your project needs additional setup beyond what is provided, add a `postinstall` step to **package.json** in your project that builds all necessary dependencies in other workspaces. For example:
+
+```json package.json
+{
+  "scripts": {
+    "postinstall": "cd ../.. && yarn build"
+  }
+}
+```
