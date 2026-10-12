@@ -58,7 +58,7 @@ Xcode + CocoaPods (iOS), JDK 17 + Android SDK (Android) — bez zmian względem 
 | `bunfig.toml` | katalog aplikacji | `preload` dla każdego procesu Buna, `env = false`; w monorepo dodaj `[install] linker = "hoisted"` |
 | `tools/bun/node-compat.preload.js` | repo | sortowanie `fs.readdir*` jak w Node |
 | `tools/bun/jest.preload.js` | repo | Jest pod Bunem zachowuje się jak pod Node |
-| `tools/bun/expo-cli.preload.js` | repo | `bun expo run:*` / `export:embed`: bundlowanie (także prebundle „eager” Release) przez Buna |
+| `tools/bun/expo-cli.preload.js` | repo | `bun expo run:*` / `export:embed`: bundlowanie (także prebundle „eager” Release) przez Buna; `expo-updates` `createUpdatesResources.js`: assety `app.manifest` z grafu Buna |
 | `metro.config.js` | katalog aplikacji | pod Bunem `transformer.unstable_workerThreads = false` + `WorkerFarm` na wątkach Buna |
 | `tools/bun/metro-worker-farm.js`, `metro-worker-farm.worker.js` | repo | transformacje Metro w wątkach Buna (`Worker.js` Metro, błędy jak jest-worker) |
 | `tools/bin/node` (chmod +x) | repo | shim `node` → Bun |

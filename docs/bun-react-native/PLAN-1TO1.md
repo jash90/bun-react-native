@@ -173,6 +173,11 @@ multipart z postępem bundlowania (`Accept: multipart/mixed`).
 
 ### Faza 4 — `expo-updates` (1–1,5 dnia)
 
+**Stan (2026-10-12):** zrobione — `tools/bun-bundler/updates.ts` przez preload (`createUpdatesResources.js` biegnie z
+katalogiem projektu jako roboczym: iOS `cd "$PROJECT_ROOT"`, Android `workingDir(projectRoot)`). `app.manifest` =
+Metro (poza losowymi `id`/`commitTime`) dla iOS i Androida, Release i Debug; szczegóły i build na symulatorze w
+HISTORY (etap 12, faza 4).
+
 - Fakty: w Release (iOS: faza „Generate updates resources for expo-updates”, `expo-updates/ios/EXUpdates.podspec:141-152`,
   `scripts/create-updates-resources-ios.sh`; Android: `create<Variant>UpdatesResources`, `ExpoUpdatesPlugin.kt:31-86`)
   `utils/build/createUpdatesResources.js` woła `createMetroServerAndBundleRequestAsync` i `exportEmbedAssetsAsync`

@@ -393,6 +393,30 @@ faza 5.
    w HTML (Expo bierze skrypt i CSS z zasobów serializera `static` — 9 bloków `data-expo-css-hmr` vs 8). Web zostaje na
    dotychczasowej ścieżce do czasu tych poprawek.
 
+### Faza 4 — `expo-updates`: `app.manifest` z grafu Buna
+
+1. **Problem**: w buildzie Release osadzony bundle i assety robi bundler Buna, a `app.manifest` (hashe assetów
+   osadzonej aktualizacji) liczy `createUpdatesResources.js` z `expo-updates` przez `createMetroServerAndBundleRequestAsync`
+   + `exportEmbedAssetsAsync` Expo — serwer Metro i przejście jego grafu (~7–8 s na zimno w każdym buildzie).
+2. **`updates.ts`**: przez preload (`tools/bun/expo-cli.preload.js`, skrypt rozpoznany po ścieżce) obie funkcje z
+   `@expo/cli/build/src/expoUpdatesExports` zwracają assety bundla Buna tego samego wpisu, platformy i trybu (kształt
+   `AssetData` Metro). Preload działa, bo skrypt biegnie z katalogu projektu (iOS `cd "$PROJECT_ROOT"`, Android
+   `workingDir(projectRoot)` w `ExpoUpdatesPlugin.kt`). Projekty na Metro (RSC, nieobsługiwany `metro.config.js`,
+   `RN_BUNDLER=metro`) zostają przy Metro.
+3. Błąd po drodze: `createUpdatesResources.js` dostaje ścieżkę `/tmp/...`, resolver zwraca `/private/tmp/...`, więc
+   zaślepki brakujących eksportów nie trafiały w pliki i `Bun.build` kończył się błędem „No matching export” —
+   `realpath` jak w `cli.ts`.
+4. **Weryfikacja** (fikstura `wt-p6` z `expo-updates` i SVG, `CONFIGURATION=Release|Debug`): `app.manifest` z grafu
+   Buna = Metro (poza losowymi `id`/`commitTime`) — iOS Release 36 assetów, Android Release 43, iOS Debug 42, Android
+   Debug 49.
+5. **Build Release na symulatorze** (iPhone 17 Pro, `expo run:ios --configuration Release`, `updates.url` fikcyjny z
+   `checkAutomatically: NEVER`, `runtimeVersion: p4-1`): bundle z Buna (`iOS Bundled 2093ms with Bun`), `app.manifest`
+   w `EXUpdates.bundle` = Metro (36 assetów); aplikacja: `Updates.isEnabled=true`, `isEmbeddedLaunch=true`, `updateId`
+   = `id` wbudowanego manifestu, `runtimeVersion=p4-1`, obraz PNG z osadzonych assetów i SVG z pluginu — bez błędów
+   `expo-updates` w logu. Po drodze: pozostałość testu RSC w fiksturze (import pliku `'use server'` przy wyłączonym
+   RSC) wywracała start błędem `window.location.href is not defined` — błąd fikstury, nie bundlera. Android: tylko
+   porównanie manifestów (pkt 4), bez buildu Gradle.
+
 ---
 
 ## Jak powtórzyć weryfikację
