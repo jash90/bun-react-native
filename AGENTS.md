@@ -49,4 +49,8 @@ Docs: https://docs.expo.dev/eas/index.md
   unminified Metro output byte-identical to Node's and let Jest run on Bun. Details: `docs/bun-react-native/RUNBOOK.md`.
 - `tools/bun/metro-minifier.js` replaces terser under Bun (only used when Metro minifies, i.e. web exports); after
   changing it run `bun run test:tools` and check `hermesc` still compiles a minified bundle.
+- Bundling uses `tools/bun-bundler/` (Bun.build + Metro-equivalent resolver + Expo Babel transform) instead of Metro:
+  native release builds call `tools/bun-bundler/cli.ts` via `plugins/with-bun-bundler.js`; `bun run start` is its dev
+  server (live reload, no Fast Refresh/debugger - use `bun run start:metro` for those). After changing it run
+  `bun run test:tools`, bundle both platforms and compile with `hermesc`. Details: `docs/bun-react-native/BUNDLER.md`.
 - `bun.lock` must reference the default registry (`""`); `bunfig.toml` pins `https://registry.npmjs.org/`.

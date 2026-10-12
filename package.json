@@ -5,18 +5,19 @@
   "private": true,
   "packageManager": "bun@1.4.3",
   "scripts": {
-    "start": "expo start",
-    "android": "expo run:android",
-    "ios": "expo run:ios",
+    "start": "bun tools/bun-bundler/cli.ts start",
+    "start:metro": "expo start",
+    "android": "expo run:android --no-bundler",
+    "ios": "expo run:ios --no-bundler",
     "web": "expo start --web",
     "prebuild": "expo prebuild --clean",
     "lint": "expo lint",
     "typecheck": "tsc --noEmit",
     "test": "jest",
+    "test:tools": "bun test",
     "reset-project": "node ./scripts/reset-project.js",
     "eas-build-pre-install": "chmod +x tools/bin/node && set-env PATH \"$EAS_BUILD_WORKINGDIR/tools/bin:$PATH\"",
-    "eas-build-post-install": "node -e \"if (!process.versions.bun) { console.error('node is not Bun: tools/bin/node is not first on PATH'); process.exit(1) }\"",
-    "test:tools": "bun test"
+    "eas-build-post-install": "node -e \"if (!process.versions.bun) { console.error('node is not Bun: tools/bin/node is not first on PATH'); process.exit(1) }\""
   },
   "dependencies": {
     "@expo/ui": "~57.0.22",

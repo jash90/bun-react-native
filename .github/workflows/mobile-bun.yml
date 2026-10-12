@@ -39,7 +39,13 @@ jobs:
       - run: bun run typecheck
       - run: bun run lint
       - run: bun run test --ci # Jest on the Bun runtime (tools/bun/jest.preload.js via bunfig.toml)
-      - run: bun run test:tools # bun test: Bun-only toolchain code (Metro minifier)
+      - run: bun run test:tools # bun test: Bun-only toolchain code (bundler resolver, Metro minifier)
+      - name: Bun bundler (replaces Metro) -> Hermes bytecode
+        run: |
+          bun tools/bun-bundler/cli.ts export:embed --platform android --dev false --minify false \
+            --entry-file node_modules/expo-router/entry.js --bundle-output out/index.android.bundle \
+            --assets-dest out/res --sourcemap-output out/index.android.bundle.map
+          node_modules/hermes-compiler/hermesc/linux64-bin/hermesc -emit-binary -O -out out/index.android.hbc out/index.android.bundle
 
   android:
     runs-on: ubuntu-latest

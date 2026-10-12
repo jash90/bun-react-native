@@ -3,7 +3,8 @@
 # bun react native
 
 Expo (SDK 57) / React Native 0.86 app whose whole toolchain runs on **Bun** instead of Node.js:
-package installs, Expo CLI, Metro, Babel, Jest, ESLint, TypeScript, CocoaPods/Gradle/Xcode build steps and CI.
+package installs, Expo CLI, a Bun-based bundler replacing Metro (release builds + dev server), Babel, Jest, ESLint,
+TypeScript, CocoaPods/Gradle/Xcode build steps and CI.
 On the device the JavaScript still runs on Hermes.
 
 Created in [T3 Code](https://t3.codes).
@@ -28,9 +29,10 @@ Run scripts with `bun run …` / `bun expo …` — **never with `--bun`** (it p
 the shim for child processes; see `docs/bun-react-native/KNOWN-ISSUES.md`).
 
 ```bash
-bun run start        # Metro (on Bun)
-bun run ios          # expo run:ios
-bun run android      # expo run:android
+bun run start        # Bun dev server (replaces Metro; live reload, no Fast Refresh)
+bun run start:metro  # Metro, when you need Fast Refresh or the debugger
+bun run ios          # expo run:ios --no-bundler (Debug build, uses the running dev server)
+bun run android      # expo run:android --no-bundler
 bun run typecheck
 bun run lint
 bun run test         # Jest on the Bun runtime
@@ -50,6 +52,8 @@ bun run prebuild     # expo prebuild --clean (ios/ and android/ are generated, n
 | `tools/bun/metro-minifier.js` | Metro minifier on Bun's native minifier (`Bun.build`), with terser fallback; tests: `bun run test:tools` |
 | `plugins/with-bun-xcode-env.js` | config plugin: `ios/.xcode.env` → `NODE_BINARY=$(command -v bun)` |
 | `eas.json`, `eas-build-*` scripts | Bun version for EAS Build and the shim on the EAS worker PATH (unverified on EAS) |
+| `tools/bun-bundler/` | Bun bundler replacing Metro: resolver, Babel worker pool, assets, dev server, CLI (`docs/bun-react-native/BUNDLER.md`) |
+| `plugins/with-bun-bundler.js` | config plugin: Xcode `CLI_PATH` / Gradle `cliFile` → Bun bundler (`RN_BUNDLER=metro` to fall back) |
 | `.github/workflows/mobile-bun.yml` | CI: checks, Android and iOS release builds, Node-vs-Bun bundle determinism |
 
 Full documentation, verification results and the official docs snapshot: [`docs/bun-react-native/`](docs/bun-react-native/README.md).

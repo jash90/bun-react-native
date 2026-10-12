@@ -10,6 +10,7 @@ Expo SDK 57.0.27 · React Native 0.86.3 · Metro 0.84.5 · Hermes · Bun 1.4.3 �
 
 | Dokument | Co zawiera |
 |---|---|
+| [BUNDLER.md](BUNDLER.md) | Bundler na Bunie zastępujący Metro: architektura, użycie, pomiary, weryfikacja, ograniczenia |
 | [RUNBOOK.md](RUNBOOK.md) | Krok po kroku: instalacja, pliki konfiguracyjne, shim `node`, skrypty, buildy natywne, CI, EAS, weryfikacja, wycofanie |
 | [KNOWN-ISSUES.md](KNOWN-ISSUES.md) | Wszystkie znane bugi (Bun/Expo/RN/Jest) z linkami, statusem, obejściem, testem i warunkiem usunięcia obejścia |
 | [VERIFICATION.md](VERIFICATION.md) | Dowody: przebieg e2e bez Node, porównania bajt-w-bajt z Node, pomiary czasów, lista miejsc wołających `node` |

@@ -35,7 +35,8 @@
           "imageWidth": 76
         }
       ],
-      "./plugins/with-bun-xcode-env"
+      "./plugins/with-bun-xcode-env",
+      "./plugins/with-bun-bundler"
     ],
     "experiments": {
       "typedRoutes": true,
