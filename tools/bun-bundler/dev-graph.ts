@@ -12,7 +12,7 @@ import path from 'node:path';
 
 import { getAssetData } from './assets';
 import { ASSET_REGISTRY_VIRTUAL } from './resolver';
-import { ASSET_REGISTRY_SRC, createProject, listContextFiles, type Project } from './shared';
+import { ASSET_REGISTRY_SRC, contextModuleSource, createProject, listContextFiles, type ContextSpec, type Project } from './shared';
 import { REQUIRE_CONTEXT_PREFIX } from './transform-worker';
 import { transformCss } from './web';
 
@@ -30,12 +30,6 @@ interface Mod {
   contextSpec?: ContextSpec;
 }
 
-interface ContextSpec {
-  dir: string;
-  recursive: boolean;
-  filter: { pattern: string; flags: string };
-  mode: string;
-}
 
 export interface HmrModule {
   module: [number, string];
@@ -132,8 +126,8 @@ export class DevGraph {
     } else if (key === ASSET_REGISTRY_VIRTUAL) {
       mod.code = ASSET_REGISTRY_SRC;
     } else if (key.startsWith(ASSET_PREFIX)) {
-      const data = getAssetData(this.assetFiles.get(key)!, this.project.projectRoot);
-      const { files, ...publicData } = data;
+      const data = getAssetData(this.assetFiles.get(key)!, this.project.projectRoot, '/assets', this.project.platform);
+      const { files, fileSystemLocation, ...publicData } = data;
       if (this.project.isWeb) {
         // like @expo/metro-config's asset transformer for web: a URL served by the dev server (/assets/...)
         const uri = JSON.stringify(`${data.httpServerLocation}/${data.name}.${data.type}`);
@@ -150,12 +144,9 @@ export class DevGraph {
       mod.contextSpec = spec;
       const files = listContextFiles(spec.dir, spec.recursive, new RegExp(spec.filter.pattern, spec.filter.flags));
       specs = files.map((rel) => ({ key: this.resolveOrThrow(path.join(spec.dir, rel), key, false) }));
-      mod.code = `var map = {\n${files.map((rel, i) => `  ${JSON.stringify(rel)}: function () { return require(_dependencyMap[${i}]); },`).join('\n')}\n};
-function ctx(key) { var f = map[key]; if (!f) { var e = new Error("Cannot find module '" + key + "'"); e.code = 'MODULE_NOT_FOUND'; throw e; } return f(); }
-ctx.keys = function () { return Object.keys(map); };
-ctx.resolve = function (key) { return key; };
-ctx.id = ${JSON.stringify(path.relative(this.project.projectRoot, spec.dir))};
-module.exports = ctx;`;
+      // Metro's template; Metro-format modules load dependencies through `_dependencyMap` (lazy modes as eager:
+      // the dev graph has no async chunks)
+      mod.code = contextModuleSource(spec.mode.startsWith('lazy') ? { ...spec, mode: 'eager' } : spec, files, (i) => `require(_dependencyMap[${i}])`);
     } else {
       const ext = path.extname(key).slice(1);
       if (ext === 'json') {

@@ -31,7 +31,7 @@ Expo SDK 57.0.27 · React Native 0.86.3 · Metro 0.84.5 · Hermes · Bun 1.4.3 �
 
 | Zamiast | Używamy | Dlaczego |
 |---|---|---|
-| `Bun.build` bez dodatków | własny bundler na API Buna (`tools/bun-bundler/`, [BUNDLER.md](BUNDLER.md)); Metro jako wyjście awaryjne i do eksportu OTA | `Bun.build` nie zna formatu modułów Metro, HMR RN ani rejestru assetów — patrz KNOWN-ISSUES |
+| `Bun.build` bez dodatków | własny bundler na API Buna (`tools/bun-bundler/`, [BUNDLER.md](BUNDLER.md)) — buildy, dev server, eksport OTA i web; Metro tylko jako wyjście awaryjne | `Bun.build` nie zna formatu modułów Metro, HMR RN ani rejestru assetów — patrz KNOWN-ISSUES |
 | `bun test` | Jest uruchomiony na runtime Bun | Flow + presety Jest RN (oven-sh/bun#16945) |
 | usunięcie Node z obrazów EAS / runnerów | Node obecny, ale nieużywany (shim przed nim na PATH) | obrazy dostarcza dostawca |
 

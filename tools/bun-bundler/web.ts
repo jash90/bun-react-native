@@ -1,9 +1,12 @@
-// Web for the Bun bundler: CSS (Expo's lightningcss-based transform), web assets and the static
-// export (`expo export --platform web` with `web.output: "static"`), replacing Metro for web.
+// Web building blocks of the Bun bundler: CSS (Expo's lightningcss-based transform), web assets and
+// Bun.build for the three web targets Expo bundles with Metro:
 //
-// Static export = client bundle (Bun.build, browser) + server bundle of `@expo/router-server/node/render.js`
-// (Bun.build, target bun, executed in this process) -> getManifest() + getStaticContent(url) per route ->
-// HTML with the client JS/CSS injected, like Expo CLI's exportStaticAsync.
+//   client   - browser script (IIFE) loaded by the HTML (export) or used by the dev server for SSR resources
+//   render   - `@expo/router-server/node/render.js` as an ES module for Bun (static rendering: export + dev SSR)
+//   function - CommonJS module for Node-compatible servers (API routes, middleware, SSR render module), like
+//              Metro's `_expo/functions/*.js` that `expo-server` loads with `require()`
+//
+// Exports and the dev SSR are in ./web-export.ts and ./web-dev.ts.
 import fs from 'node:fs';
 import path from 'node:path';
 import { builtinModules } from 'node:module';
@@ -11,17 +14,17 @@ import type { BunPlugin } from 'bun';
 
 import { getAssetData, type AssetData } from './assets';
 import { ASSET_REGISTRY_VIRTUAL } from './resolver';
-import { ASSET_REGISTRY_SRC, createProject, readAppJson, requireContextSource, type Project } from './shared';
+import { ASSET_REGISTRY_SRC, metafileOrder, requireContextSource, type Project } from './shared';
 import { REQUIRE_CONTEXT_PREFIX } from './transform-worker';
 
-const md5 = (data: string | Uint8Array) => new Bun.CryptoHasher('md5').update(data).digest('hex');
+export const md5 = (data: string | Uint8Array) => new Bun.CryptoHasher('md5').update(data).digest('hex');
 const NODE_BUILTINS = new Set([...builtinModules, ...builtinModules.map((m) => `node:${m}`)]);
 
 // ---------------------------------------------------------------- CSS
 
 export interface CssResult {
-  js: string; // module code (class map for CSS modules; dev: + style injection with HMR)
-  css: string; // stylesheet text (empty for the server)
+  js: string; // module code: class map for CSS modules; dev client: + `<style>` injection with HMR
+  css: string; // stylesheet text (minified unless dev)
 }
 
 export async function transformCss(project: Project, file: string, mode: { dev: boolean; server: boolean }): Promise<CssResult> {
@@ -35,25 +38,36 @@ export async function transformCss(project: Project, file: string, mode: { dev: 
       src,
       options: { projectRoot: project.projectRoot, minify: !mode.dev, dev: mode.dev && !mode.server, sourceMap: false, reactServer: false },
     });
-    return { js: r.output, css: mode.server ? '' : r.css };
+    return { js: r.output, css: r.css };
   }
   // global stylesheet
   const { transform } = project.projectRequire('lightningcss');
   const out = transform({ filename, code: Buffer.from(src), minify: !mode.dev, errorRecovery: true, include: 1 });
   const css = out.code.toString();
-  if (mode.server) return { js: '', css: '' };
-  if (mode.dev) return { js: cssDev.wrapDevelopmentCSS({ filename, src: css, reactServer: false }), css: '' };
+  if (mode.dev && !mode.server) return { js: cssDev.wrapDevelopmentCSS({ filename, src: css, reactServer: false }), css };
   return { js: '', css };
 }
 
-// ---------------------------------------------------------------- web assets (export)
+/** `data-expo-css-hmr` id of a stylesheet (Expo's pathToHtmlSafeName of the project-relative path). */
+export const cssHmrId = (originFilename: string) => originFilename.replace(/[^a-zA-Z0-9_]/g, '_');
 
-/** Expo web export asset: hashed file name, module exports `{ uri, width, height }` (or the URL). */
-export function webAssetModule(data: AssetData): { js: string; name: string } {
-  // same as @expo/metro-config getMD5ForData: a single file keeps its own md5
+// ---------------------------------------------------------------- web assets
+
+export interface WebAsset {
+  data: AssetData;
+  name: string; // file name without scale suffix and extension
+}
+
+/**
+ * Module of a web asset, like @expo/metro-config's asset transformer for web: `{ uri, width, height }` (or the URL).
+ * Exports name the file `name.<md5>` (@expo/metro-config getMD5ForData: a single file keeps its own md5).
+ */
+export function webAssetModule(data: AssetData, opts: { hashed: boolean }): { js: string; name: string } {
   const hash = data.fileHashes.length === 1 ? data.fileHashes[0] : md5(data.fileHashes.join(''));
-  const name = `${data.name}.${hash}`;
-  const uri = `${data.httpServerLocation}/${name}.${data.type}`;
+  const name = opts.hashed ? `${data.name}.${hash}` : data.name;
+  // exports flatten `../` (assets outside the project root) like Expo's asset transformer
+  const location = opts.hashed ? data.httpServerLocation.replace(/\.\.\//g, '_') : data.httpServerLocation;
+  const uri = `${location}/${name}.${data.type}`;
   const js =
     data.width != null || data.height != null
       ? `module.exports = { uri: ${JSON.stringify(uri)}, width: ${data.width}, height: ${data.height}, toString() { return this.uri } };`
@@ -61,37 +75,53 @@ export function webAssetModule(data: AssetData): { js: string; name: string } {
   return { js, name };
 }
 
-function copyWebAssets(assets: { data: AssetData; name: string }[], outDir: string) {
-  let count = 0;
+/** Output files (path relative to the export root) of web assets, every scale variant. */
+export function webAssetFiles(assets: WebAsset[]): Map<string, string> {
+  const out = new Map<string, string>(); // relative destination -> source file
   for (const { data, name } of assets) {
     data.files.forEach((src, i) => {
       const scale = data.scales[i];
       const suffix = scale === 1 ? '' : `@${scale}x`;
-      const dest = path.join(outDir, data.httpServerLocation.replace(/^\//, ''), `${name}${suffix}.${data.type}`);
-      fs.mkdirSync(path.dirname(dest), { recursive: true });
-      fs.copyFileSync(src, dest);
-      count++;
+      const dir = data.httpServerLocation.replace(/^\//, '').replace(/\.\.\//g, '_');
+      out.set(`${dir}/${name}${suffix}.${data.type}`, src);
     });
   }
-  return count;
+  return out;
 }
 
-// ---------------------------------------------------------------- Bun.build for web (client or server)
+// ---------------------------------------------------------------- Bun.build for web
 
-interface WebBuildResult {
+export type WebBuildKind = 'client' | 'render' | 'function';
+
+export interface WebBuildOptions {
+  kind: WebBuildKind;
+  minify: boolean;
+  sourcemap?: boolean;
+  /** URL prefix of exported assets (`experiments.baseUrl`); assets are served from `${baseUrl}/assets/...` */
+  baseUrl?: string;
+}
+
+export interface WebBuildResult {
   code: string;
-  css: { file: string; css: string }[];
-  assets: { data: AssetData; name: string }[];
+  map: any | null; // bundle -> original sources (composed with the Babel maps)
+  /** stylesheets in Metro's order (post-order walk of the import graph from the entry) */
+  css: { originFilename: string; css: string }[];
+  assets: WebAsset[];
+  modules: string[];
 }
 
-async function buildWeb(project: Project, entries: string[], opts: { minify: boolean; outFile?: string }): Promise<WebBuildResult> {
-  const { resolver, projectRoot, projectPkg } = project;
-  const server = project.isServer;
+export async function buildWeb(project: Project, entries: string[], opts: WebBuildOptions): Promise<WebBuildResult> {
+  const { resolver, projectRoot, projectPkg, dev } = project;
+  const server = opts.kind !== 'client';
+  if (server !== project.isServer) throw new Error(`buildWeb(${opts.kind}) needs a ${server ? 'server' : 'client'} project`);
   const ENTRY = '\0bun-rn:web-entry';
   const cssByFile = new Map<string, string>();
-  const assets: { data: AssetData; name: string }[] = [];
+  const assetByPath = new Map<string, WebAsset>();
   const assetFiles = new Map<string, string[]>();
   const missingExports = new Map<string, Set<string>>();
+  const babelMaps = new Map<string, any>();
+  const modules = new Set<string>();
+  const publicPath = `${opts.baseUrl ?? ''}/assets`;
 
   const plugin: BunPlugin = {
     name: 'react-native-web',
@@ -120,9 +150,10 @@ async function buildWeb(project: Project, entries: string[], opts: { minify: boo
       });
       build.onLoad({ filter: /.*/, namespace: 'rn-empty' }, () => ({ contents: 'module.exports = {};', loader: 'js' })); // CommonJS like Metro's empty module: named imports are undefined
       build.onLoad({ filter: /.*/, namespace: 'rn-asset' }, (args) => {
-        const data = getAssetData(assetFiles.get(args.path)!, projectRoot);
-        const { js, name } = webAssetModule(data);
-        assets.push({ data, name });
+        const data = getAssetData(assetFiles.get(args.path)!, projectRoot, publicPath, 'web');
+        const { js, name } = webAssetModule(data, { hashed: !dev });
+        assetByPath.set(args.path, { data, name });
+        for (const f of data.files) modules.add(f);
         return { contents: js, loader: 'js' };
       });
       build.onLoad({ filter: /.*/, namespace: 'rn-context' }, (args) => {
@@ -131,15 +162,17 @@ async function buildWeb(project: Project, entries: string[], opts: { minify: boo
       });
       build.onLoad({ filter: /.*/, namespace: 'file' }, async (args) => {
         const file = args.path;
+        modules.add(file);
         const ext = path.extname(file).slice(1);
         if (ext === 'json') return { contents: fs.readFileSync(file, 'utf8'), loader: 'json' };
         if (ext === 'css') {
-          const r = await transformCss(project, file, { dev: false, server });
-          if (r.css) cssByFile.set(file, r.css);
+          const r = await transformCss(project, file, { dev, server });
+          cssByFile.set(file, r.css);
           return { contents: r.js, loader: 'js' };
         }
         if (ext === 'scss' || ext === 'sass') throw new Error(`${file}: Sass is not supported by the Bun bundler`);
         const res = await project.transform(file, 'module', 'esm');
+        if (res.map) babelMaps.set(file, res.map);
         const stubs = missingExports.get(file);
         const stubCode = stubs ? '\n' + [...stubs].map((n) => `export var ${n} = void 0;`).join('\n') : '';
         return { contents: (res.code ?? '') + stubCode, loader: 'js' };
@@ -150,15 +183,17 @@ async function buildWeb(project: Project, entries: string[], opts: { minify: boo
   let result: any;
   for (let attempt = 0; ; attempt++) {
     result = await Bun.build({
-      // the server bundle keeps render.js's exports, so it is the entry itself
+      // server targets keep the entry's exports, so the entry is built directly
       entrypoints: server ? entries : [ENTRY],
       plugins: [plugin],
-      target: server ? 'bun' : 'browser',
-      format: server ? 'esm' : 'iife',
+      target: opts.kind === 'client' ? 'browser' : opts.kind === 'render' ? 'bun' : 'node',
+      format: opts.kind === 'client' ? 'iife' : opts.kind === 'render' ? 'esm' : 'cjs',
       minify: opts.minify,
+      sourcemap: opts.sourcemap ? 'external' : 'none',
+      metafile: true,
       define: {
-        __DEV__: 'false',
-        'process.env.NODE_ENV': '"production"',
+        __DEV__: String(dev),
+        'process.env.NODE_ENV': JSON.stringify(dev ? 'development' : 'production'),
         ...(server ? {} : { global: 'globalThis' }),
       },
       throw: false,
@@ -177,126 +212,33 @@ async function buildWeb(project: Project, entries: string[], opts: { minify: boo
     }
     if (!added) break;
   }
-  if (!result.success) throw new Error(`Bun.build (${server ? 'web server' : 'web'}) failed:\n${result.logs.map(String).join('\n')}`);
-  const js = await result.outputs.find((o: any) => o.kind === 'entry-point').text();
-  const css = [...cssByFile.entries()]
-    .sort(([a], [b]) => (a < b ? -1 : 1))
-    .map(([file, text]) => ({ file, css: text }));
-  return { code: js, css, assets };
-}
+  if (!result.success) throw new Error(`Bun.build (web ${opts.kind}) failed:\n${result.logs.map(String).join('\n')}`);
+  const code = (await result.outputs.find((o: any) => o.kind === 'entry-point').text()).replace(/\n?\/\/# (sourceMappingURL|debugId)=.*$/gm, '');
 
-// ---------------------------------------------------------------- routes from the Expo Router manifest
-
-function htmlRoutes(manifest: any): { route: string; file: string }[] {
-  const out: { route: string; file: string }[] = [];
-  const walk = (screens: Record<string, any>, prefix: string) => {
-    for (const [name, value] of Object.entries(screens ?? {})) {
-      const segment = typeof value === 'string' ? value : (value?.path ?? '');
-      const full = [prefix, segment].filter(Boolean).join('/');
-      if (value && typeof value === 'object' && !value._route && value.screens && Object.keys(value.screens).length) {
-        walk(value.screens, full);
-        continue;
-      }
-      if (/(^|\/)[:*][^/]*/.test(full) && !full.includes('*not-found')) continue; // dynamic segments need params
-      const file = full.includes('*not-found') ? '+not-found' : full === '' ? 'index' : full.replace(/\*\w+/g, '');
-      const route = full.includes('*not-found') ? '/+not-found' : '/' + full;
-      if (!out.some((r) => r.file === file)) out.push({ route, file });
-      void name;
-    }
-  };
-  walk(manifest?.screens ?? {}, '');
-  return out;
-}
-
-// ---------------------------------------------------------------- static export
-
-export interface WebExportOptions {
-  projectRoot: string;
-  outputDir: string;
-  minify?: boolean;
-  log?: (msg: string) => void;
-}
-
-export async function exportWeb(opts: WebExportOptions) {
-  const t0 = performance.now();
-  const log = opts.log ?? (() => {});
-  const { projectRoot } = opts;
-  const outDir = path.resolve(opts.outputDir);
-  fs.rmSync(outDir, { recursive: true, force: true });
-  fs.mkdirSync(outDir, { recursive: true });
-  const appJson = readAppJson(projectRoot)?.expo ?? {};
-  const pkg = JSON.parse(fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf8'));
-  const entry = require.resolve(pkg.main ?? './index.js', { paths: [projectRoot] });
-
-  // ---- client
-  const client = createProject({ projectRoot, platform: 'web', dev: false });
-  let clientBuild: WebBuildResult;
-  let polyfills: string[];
-  try {
-    clientBuild = await buildWeb(client, [...client.runBeforeMain, entry], { minify: opts.minify ?? true });
-    polyfills = await client.polyfillSources();
-  } finally {
-    client.close();
+  let map: any = null;
+  if (opts.sourcemap) {
+    const smOut = result.outputs.find((o: any) => o.kind === 'sourcemap');
+    const bunMap = smOut ? JSON.parse(await smOut.text()) : { version: 3, sources: [], names: [], mappings: '' };
+    map = composeBabelMaps(project, bunMap, babelMaps);
   }
-  const clientJs = [client.prelude(), ...polyfills, clientBuild.code].join('\n');
-  const jsName = `_expo/static/js/web/entry-${md5(clientJs)}.js`;
-  fs.mkdirSync(path.join(outDir, path.dirname(jsName)), { recursive: true });
-  fs.writeFileSync(path.join(outDir, jsName), clientJs);
-  const cssNames = clientBuild.css.map(({ file, css }) => {
-    const name = `_expo/static/css/${path.basename(file, '.css')}-${md5(css)}.css`;
-    fs.mkdirSync(path.join(outDir, path.dirname(name)), { recursive: true });
-    fs.writeFileSync(path.join(outDir, name), css);
-    return name;
+
+  // stylesheets in Metro's order (@expo/metro-config getCssSerialAssets): post-order walk from the entry
+  const css = metafileOrder(result.metafile, entries[entries.length - 1]).post.filter((f) => cssByFile.has(f)).map((file) => ({
+    originFilename: path.relative(projectRoot, file).split(path.sep).join('/'),
+    css: cssByFile.get(file)!,
+  }));
+  const { pre } = metafileOrder(result.metafile, server ? entries[0] : ENTRY);
+  const assets = pre.filter((p) => assetByPath.has(p)).map((p) => assetByPath.get(p)!);
+  return { code, map, css, assets, modules: [...modules] };
+}
+
+/** Compose Bun's map (bundle -> Babel output) with the per-file Babel maps (Babel output -> source). */
+export function composeBabelMaps(project: Project, bunMap: any, babelMaps: Map<string, any>) {
+  const remapping = project.projectRequire('@jridgewell/remapping');
+  const map: any = remapping(bunMap, (source: string) => {
+    if (path.isAbsolute(source)) return null;
+    return babelMaps.get(path.resolve(project.projectRoot, source)) ?? null;
   });
-  const assetCount = copyWebAssets(clientBuild.assets, outDir);
-
-  // ---- server (static rendering), executed here
-  const server = createProject({ projectRoot, platform: 'web', dev: false, environment: 'node' });
-  let serverBuild: WebBuildResult;
-  try {
-    const renderEntry = server.projectRequire.resolve('@expo/router-server/node/render.js');
-    serverBuild = await buildWeb(server, [renderEntry], { minify: false });
-  } finally {
-    server.close();
-  }
-  const serverDir = path.join(projectRoot, 'node_modules', '.cache', 'bun-rn-bundler', 'web-server');
-  fs.mkdirSync(serverDir, { recursive: true });
-  const serverFile = path.join(serverDir, `render-${md5(serverBuild.code)}.mjs`);
-  // the server bundle is an ES module whose entry re-exports nothing: expose render.js's exports
-  fs.writeFileSync(serverFile, serverBuild.code);
-  const renderModule = await loadRenderModule(server, serverFile);
-
-  const manifest = await renderModule.getManifest({ preserveApiRoutes: false, ...(appJson.extra?.router ?? {}) });
-  const routes = htmlRoutes(manifest);
-  // same order as `expo export -p web`: favicon, hydration flag, CSS in <head>; the script ends <body>
-  const favicon = appJson.web?.favicon ? path.resolve(projectRoot, appJson.web.favicon) : null;
-  const head =
-    (favicon ? '<link rel="icon" href="/favicon.ico"/>' : '') +
-    `<script type="module">globalThis.__EXPO_ROUTER_HYDRATE__=true;</script>` +
-    cssNames.map((n) => `<link rel="preload" href="/${n}" as="style"><link rel="stylesheet" href="/${n}">`).join('');
-  const script = `<script src="/${jsName}" defer></script>`;
-  for (const { route, file } of routes) {
-    let html: string = await renderModule.getStaticContent(new URL(route, 'http://localhost:8081'));
-    html = html.includes('</head>') ? html.replace('</head>', `${head}</head>`) : head + html;
-    html = html.includes('</body>') ? html.replace('</body>', `${script}</body>`) : html + script;
-    const dest = path.join(outDir, `${file}.html`);
-    fs.mkdirSync(path.dirname(dest), { recursive: true });
-    fs.writeFileSync(dest, html);
-  }
-  if (favicon) fs.copyFileSync(favicon, path.join(outDir, 'favicon.ico'));
-  fs.mkdirSync(path.join(outDir, '_expo'), { recursive: true });
-  fs.writeFileSync(path.join(outDir, '_expo', '.routes.json'), JSON.stringify({ redirects: [] }, null, 2));
-
-  const ms = Math.round(performance.now() - t0);
-  log(`Web exported ${routes.length} routes, ${cssNames.length} CSS, ${assetCount} assets in ${ms}ms with Bun -> ${outDir}`);
-  return { routes, jsName, cssNames, ms };
-}
-
-/** Load the server bundle; render.js's exports are reachable through the bundled module registry. */
-async function loadRenderModule(server: Project, file: string): Promise<any> {
-  void server;
-  const mod = await import(file);
-  if (typeof mod.getStaticContent === 'function') return mod;
-  if (mod.default && typeof mod.default.getStaticContent === 'function') return mod.default;
-  throw new Error(`Static render bundle ${file} does not export getStaticContent`);
+  map.sources = map.sources.map((s: string) => (path.isAbsolute(s) ? path.relative(project.projectRoot, s) : s));
+  return map;
 }

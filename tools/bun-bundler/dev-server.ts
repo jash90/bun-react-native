@@ -1,6 +1,6 @@
 // Development server for the Bun bundler (replaces the Metro dev server), built on Bun.serve.
 //
-//   GET  /, /<route> (Accept: text/html) -> web: HTML shell loading the web dev bundle (client-rendered)
+//   web routes (HTML with SSR, API routes, middleware, public/, favicon) -> ./web-dev.ts (like Expo CLI per web.output)
 //   GET  /status                       -> "packager-status:running" (RCTBundleURLProvider)
 //   GET  /<entry>.bundle?platform=..   -> dev bundle in Metro module format (./dev-graph.ts)
 //   GET  /<entry>.map?platform=..      -> its source map
@@ -15,8 +15,9 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import type { Server, ServerWebSocket } from 'bun';
 
+import { getAssetRecord } from './assets';
 import { DevGraph, type HmrUpdate } from './dev-graph';
-import { readAppJson } from './shared';
+import { createWebDevHandler } from './web-dev';
 
 export interface DevServerOptions {
   projectRoot: string;
@@ -108,7 +109,10 @@ export async function startDevServer(opts: DevServerOptions) {
     return sent;
   }
 
+  const web = createWebDevHandler({ projectRoot, port });
+
   async function onFilesChanged(files: string[]) {
+    web.invalidate(files);
     for (const [platform, g] of graphs) {
       const base = lastBundleUrl.get(platform);
       const urlFor = (ext: string) => (name: string) => {
@@ -178,7 +182,6 @@ export async function startDevServer(opts: DevServerOptions) {
       const url = new URL(request.url);
       const { pathname, searchParams } = url;
       const platform = (searchParams.get('platform') ?? 'ios') as Platform;
-      const wantsHtml = request.method === 'GET' && (request.headers.get('accept') ?? '').includes('text/html');
 
       if (pathname === '/hot' || pathname === '/message') {
         if (srv.upgrade(request, { data: { kind: pathname.slice(1) as 'hot' | 'message' } })) return undefined as any;
@@ -203,10 +206,6 @@ export async function startDevServer(opts: DevServerOptions) {
         return Response.json(flatMap(platform)!.flat);
       }
       if (pathname.startsWith('/assets/')) return serveAsset(projectRoot, pathname, searchParams.get('platform') ?? 'web');
-      if (pathname === '/favicon.ico') {
-        const favicon = readAppJson(projectRoot)?.expo?.web?.favicon;
-        return favicon ? new Response(Bun.file(path.resolve(projectRoot, favicon))) : new Response('Not found', { status: 404 });
-      }
       if (pathname === '/symbolicate' && request.method === 'POST') {
         const body = await request.json();
         const bundleFrame = (body.stack ?? []).map((f: any) => f?.file).find((f: string) => /\.bundle(\?|$)/.test(f ?? ''));
@@ -215,7 +214,8 @@ export async function startDevServer(opts: DevServerOptions) {
         return Response.json(symbolicate(projectRoot, body.stack ?? [], flatMap(p)!.trace, originalPositionFor));
       }
       if (pathname === '/open-stack-frame' || pathname === '/open-url') return new Response('');
-      if (wantsHtml) return new Response(webShell(projectRoot), { headers: { 'Content-Type': 'text/html; charset=UTF-8' } });
+      const webResponse = await web.fetch(request);
+      if (webResponse) return webResponse;
       return new Response('Not found', { status: 404 });
     },
     websocket: {
@@ -253,38 +253,21 @@ export async function startDevServer(opts: DevServerOptions) {
   return server;
 }
 
-// ---------------------------------------------------------------- web
-
-/** HTML document for web routes: public/index.html or Expo's template, plus the web dev bundle. */
-function webShell(projectRoot: string): string {
-  const custom = path.join(projectRoot, 'public', 'index.html');
-  const template = fs.existsSync(custom)
-    ? custom
-    : createRequire(path.join(projectRoot, 'package.json')).resolve('@expo/cli/static/template/index.html');
-  const expo = readAppJson(projectRoot)?.expo ?? {};
-  const html = fs
-    .readFileSync(template, 'utf8')
-    .replace(/%LANG_ISO_CODE%/g, expo.web?.lang ?? 'en')
-    .replace(/%WEB_TITLE%/g, expo.web?.name ?? expo.name ?? '');
-  const tags =
-    (expo.web?.favicon ? '<link rel="icon" href="/favicon.ico" />' : '') +
-    '<script src="/index.bundle?platform=web&dev=true&hot=false" defer></script>';
-  return html.replace('</head>', `${tags}</head>`);
-}
-
 // ---------------------------------------------------------------- assets
 
+/** metro/src/Assets.js getAsset: the first file of the asset record with at least the requested scale. */
 function serveAsset(projectRoot: string, pathname: string, platform: string): Response {
   const rel = decodeURIComponent(pathname.slice('/assets/'.length));
-  const abs = path.join(projectRoot, rel);
+  const abs = path.resolve(projectRoot, rel);
   if (!abs.startsWith(projectRoot + path.sep)) return new Response('Forbidden', { status: 403 });
-  const { dir, name, ext } = path.parse(abs);
-  const base = name.replace(/@\d+(\.\d+)?x$/, '');
-  const candidates = [abs, path.join(dir, `${base}.${platform}${ext}`), path.join(dir, `${base}${ext}`)];
-  for (const c of candidates) if (fs.existsSync(c)) return new Response(Bun.file(c));
-  const scales = fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => f.startsWith(base) && f.endsWith(ext)).sort() : [];
-  if (scales.length) return new Response(Bun.file(path.join(dir, scales[scales.length - 1])));
-  return new Response('Asset not found', { status: 404 });
+  const scale = Number(path.basename(abs).match(/@([\d.]+)x(\.[^.]+)?\.[^.]+$/)?.[1] ?? 1);
+  try {
+    const { scales, files } = getAssetRecord(abs, platform);
+    const i = scales.findIndex((s) => s >= scale);
+    return new Response(Bun.file(files[i === -1 ? files.length - 1 : i]));
+  } catch {
+    return new Response('Asset not found', { status: 404 });
+  }
 }
 
 // ---------------------------------------------------------------- symbolication

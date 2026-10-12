@@ -1,12 +1,11 @@
-// Assets for the Bun bundler: Metro-compatible asset metadata, the `registerAsset(...)` module and the
-// on-disk layout React Native expects next to an embedded bundle.
-//
-// Mirrors metro `src/Assets.js` (getAssetData) and `@react-native/assets-registry/path-support.js`.
+// Assets for the Bun bundler: Metro-compatible asset records and metadata and the `registerAsset(...)` module.
+// Mirrors metro `src/Assets.js`; writing assets next to an embedded bundle is Expo CLI's persistMetroAssetsAsync.
 import fs from 'node:fs';
 import path from 'node:path';
 
 export interface AssetData {
   __packager_asset: true;
+  fileSystemLocation: string;
   httpServerLocation: string;
   width?: number;
   height?: number;
@@ -18,12 +17,6 @@ export interface AssetData {
   files: string[];
 }
 
-const SCALE_RE = /@(\d+(?:\.\d+)?)x$/;
-
-function parseScale(fileBase: string): number {
-  const m = fileBase.match(SCALE_RE);
-  return m ? Number(m[1]) : 1;
-}
 
 /** Width/height from the image header (PNG, JPEG, GIF, WebP). */
 export function imageSize(bytes: Uint8Array): { width: number; height: number } | undefined {
@@ -68,69 +61,80 @@ export function imageSize(bytes: Uint8Array): { width: number; height: number } 
 
 const md5 = (data: Uint8Array) => new Bun.CryptoHasher('md5').update(data).digest('hex');
 
-/** Metro-compatible asset data for one asset (all its scale variants). */
-export function getAssetData(filePaths: string[], projectRoot: string, publicPath = '/assets'): AssetData {
-  const sorted = [...filePaths].sort((a, b) => parseScale(path.parse(a).name) - parseScale(path.parse(b).name) || a.localeCompare(b));
-  const first = path.parse(sorted[0]);
-  const name = first.name.replace(SCALE_RE, '').replace(/\.(ios|android|native|web)$/, '');
-  const type = first.ext.slice(1);
-  const relDir = path.relative(projectRoot, first.dir).split(path.sep).join('/');
-  const contents = sorted.map((f) => new Uint8Array(fs.readFileSync(f)));
+// ---- metro/src/node-haste/lib/parsePlatformFilePath.js + AssetPaths.js: `name@2x.ios.png` -> name, 2, ios
+const PATH_RE = /^(.+?)(\.([^.]+))?\.([^.]+)$/;
+const ASSET_BASE_NAME_RE = /(.+?)(@([\d.]+)x)?$/;
+
+function parseAssetFileName(fileName: string, platforms: Set<string>) {
+  const match = fileName.match(PATH_RE);
+  if (!match || !match[4]) return null;
+  let baseName = match[1];
+  let platform: string | null = match[3] ?? null;
+  if (platform != null && !platforms.has(platform)) {
+    baseName = `${match[1]}.${platform}`;
+    platform = null;
+  }
+  const m = baseName.match(ASSET_BASE_NAME_RE)!;
+  const resolution = m[3] != null && !Number.isNaN(parseFloat(m[3])) ? parseFloat(m[3]) : 1;
+  return { assetName: `${m[1]}.${match[4]}`, name: m[1], platform, resolution, type: match[4] };
+}
+
+/**
+ * metro/src/Assets.js getAbsoluteAssetRecord: every file of the directory that is a variant of the asset, grouped
+ * by platform; the platform's own variants (`img@2x.ios.png`) replace the generic ones. Directory entries are
+ * sorted like Node's readdir, which decides the order of equal scales (`img.png` before `img@1x.png`).
+ */
+export function getAssetRecord(assetPath: string, platform: string | null): { scales: number[]; files: string[] } {
+  const dir = path.dirname(assetPath);
+  const platforms = new Set(platform != null ? [platform] : []);
+  const target = parseAssetFileName(path.basename(assetPath), platforms);
+  if (!target) throw new Error(`invalid asset file path: ${assetPath}`);
+  const map = new Map<string, { scales: number[]; files: string[] }>();
+  for (const file of fs.readdirSync(dir).sort()) {
+    const asset = parseAssetFileName(file, platforms);
+    if (!asset) continue;
+    const key = asset.platform != null ? `${asset.assetName} : ${asset.platform}` : asset.assetName;
+    let record = map.get(key);
+    if (!record) map.set(key, (record = { scales: [], files: [] }));
+    let i = 0;
+    while (i < record.scales.length && !(asset.resolution < record.scales[i])) i++;
+    record.scales.splice(i, 0, asset.resolution);
+    record.files.splice(i, 0, path.join(dir, file));
+  }
+  const record = (platform != null ? map.get(`${target.assetName} : ${platform}`) : undefined) ?? map.get(target.assetName);
+  if (!record) throw new Error(`Asset not found: ${assetPath} for platform: ${platform ?? '(unspecified)'}`);
+  return record;
+}
+
+/** Metro-compatible asset data (metro getAssetData + Expo's `fileHashes`) for the asset resolved at `filePaths[0]`. */
+export function getAssetData(filePaths: string[], projectRoot: string, publicPath = '/assets', platform: string | null = null): AssetData {
+  const assetPath = filePaths[0];
+  const parsed = parseAssetFileName(path.basename(assetPath), new Set(platform != null ? [platform] : []))!;
+  const { scales, files } = getAssetRecord(assetPath, platform);
+  const localPath = path.relative(projectRoot, assetPath);
+  const relDir = path.dirname(localPath).split(path.sep).join('/');
+  const httpServerLocation = localPath.startsWith('..') ? `${publicPath.replace(/\/$/, '')}/${relDir}` : path.posix.join(publicPath, relDir);
+  const contents = files.map((f) => new Uint8Array(fs.readFileSync(f)));
   const all = new Bun.CryptoHasher('md5');
   for (const c of contents) all.update(c);
-  const size = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'].includes(type) ? imageSize(contents[0]) : undefined;
+  const size = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'].includes(parsed.type) ? imageSize(contents[0]) : undefined;
   return {
     __packager_asset: true,
-    httpServerLocation: relDir ? `${publicPath}/${relDir}` : publicPath,
-    ...(size ? { width: size.width, height: size.height } : {}),
-    scales: sorted.map((f) => parseScale(path.parse(f).name)),
+    fileSystemLocation: path.dirname(assetPath),
+    httpServerLocation,
+    ...(size ? { width: size.width / scales[0], height: size.height / scales[0] } : {}),
+    scales,
     hash: all.digest('hex'),
-    name,
-    type,
+    name: parsed.name,
+    type: parsed.type,
     fileHashes: contents.map(md5),
-    files: sorted,
+    files,
   };
 }
 
 /** Source of the module a `require('./image.png')` turns into. */
 export function assetModuleSource(data: AssetData, registryModule: string): string {
-  const { files, ...publicData } = data;
+  // Metro's asset transformer drops `files` and `fileSystemLocation` from the registered descriptor
+  const { files, fileSystemLocation, ...publicData } = data;
   return `module.exports = require(${JSON.stringify(registryModule)}).registerAsset(${JSON.stringify(publicData)});`;
-}
-
-// ---------------------------------------------------------------- embedded asset layout
-
-const ANDROID_DRAWABLE_TYPES = new Set(['gif', 'jpeg', 'jpg', 'png', 'webp', 'xml']);
-const ANDROID_DENSITY: Record<string, string> = { '0.75': 'ldpi', '1': 'mdpi', '1.5': 'hdpi', '2': 'xhdpi', '3': 'xxhdpi', '4': 'xxxhdpi' };
-
-function androidResourceName(data: AssetData): string {
-  const base = (data.httpServerLocation.slice(1) + '/' + data.name)
-    .toLowerCase()
-    .replace(/\//g, '_')
-    .replace(/([^a-z0-9_])/g, '')
-    .replace(/^assets_/, '');
-  return base;
-}
-
-/** Copy every scale variant where React Native looks for it next to the embedded bundle. */
-export function saveAssets(assets: AssetData[], platform: string, assetsDest: string) {
-  let count = 0;
-  for (const data of assets) {
-    data.files.forEach((src, i) => {
-      const scale = data.scales[i];
-      let dest: string;
-      if (platform === 'android') {
-        const drawable = ANDROID_DRAWABLE_TYPES.has(data.type);
-        const folder = drawable ? `drawable-${ANDROID_DENSITY[String(scale)] ?? 'mdpi'}` : 'raw';
-        dest = path.join(assetsDest, folder, `${androidResourceName(data)}.${data.type}`);
-      } else {
-        const suffix = scale === 1 ? '' : `@${scale}x`;
-        dest = path.join(assetsDest, data.httpServerLocation.replace(/^\//, ''), `${data.name}${suffix}.${data.type}`);
-      }
-      fs.mkdirSync(path.dirname(dest), { recursive: true });
-      fs.copyFileSync(src, dest);
-      count++;
-    });
-  }
-  return count;
 }

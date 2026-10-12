@@ -5,7 +5,9 @@
 //                   `expo export:embed` / `react-native bundle`, so Xcode and Gradle call it instead of Metro:
 //                   bun tools/bun-bundler/cli.ts export:embed --platform ios --dev false --entry-file index.js \
 //                     --bundle-output main.jsbundle --assets-dest out --sourcemap-output main.map [--minify false]
-//   export        - web static export (--platform web --output-dir dist), Expo Router static rendering
+//   export        - `expo export` on Bun: same flags (--platform/-p ios|android|web|all (repeatable), --output-dir,
+//                   --dev, --no-minify, --no-bytecode, --source-maps, --dump-assetmap, --no-ssg) and output layout
+//                   (EAS Update metadata.json, Hermes bytecode, web single/static/server) - see ./export.ts
 //   start         - development server (Bun.serve) on --port (default 8081), iOS/Android/web;
 //                   --web opens the app in the browser
 //
@@ -18,8 +20,14 @@ import { bundle } from './bundle';
 function parseArgs(argv: string[]) {
   const args: Record<string, string> = {};
   const positional: string[] = [];
+  const platforms: string[] = []; // `--platform` / `-p` may repeat (expo export)
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
+    if ((a === '--platform' || a === '-p') && argv[i + 1] !== undefined) platforms.push(argv[i + 1]);
+    if (a === '-p') {
+      args.platform = argv[++i];
+      continue;
+    }
     if (a.startsWith('--')) {
       const next = argv[i + 1];
       if (next !== undefined && !next.startsWith('--')) {
@@ -32,7 +40,7 @@ function parseArgs(argv: string[]) {
       positional.push(a);
     }
   }
-  return { args, positional };
+  return { args, positional, platforms };
 }
 
 function runMetro(): never {
@@ -59,6 +67,7 @@ async function runExportEmbed(args: Record<string, string>) {
     bundleOutput,
     sourcemapOutput: args['sourcemap-output'] ? path.resolve(args['sourcemap-output']) : undefined,
     assetsDest: args['assets-dest'] ? path.resolve(args['assets-dest']) : undefined,
+    assetCatalogDest: args['asset-catalog-dest'] ? path.resolve(args['asset-catalog-dest']) : undefined,
     // The transform cache is keyed by file content, so native scripts' --reset-cache is ignored by default.
     resetCache: args['reset-cache'] === 'true' && process.env.BUN_BUNDLER_HONOR_RESET_CACHE === '1',
     log: (m) => console.log(m),
@@ -71,7 +80,7 @@ async function runExportEmbed(args: Record<string, string>) {
 
 if (process.env.RN_BUNDLER === 'metro') runMetro();
 
-const { args, positional } = parseArgs(process.argv.slice(2));
+const { args, positional, platforms } = parseArgs(process.argv.slice(2));
 const command = positional[0] ?? 'export:embed';
 
 try {
@@ -83,14 +92,25 @@ try {
       Bun.spawn(process.platform === 'darwin' ? ['open', url] : ['xdg-open', url], { stdio: ['ignore', 'ignore', 'ignore'] });
     }
   } else if (command === 'export') {
-    if ((args.platform ?? 'web') !== 'web') throw new Error('export: only --platform web (native: export:embed)');
-    const { exportWeb } = await import('./web');
-    await exportWeb({
-      projectRoot: path.resolve(args['project-root'] ?? process.cwd()),
-      outputDir: path.resolve(args['output-dir'] ?? 'dist'),
-      minify: args['no-minify'] !== 'true',
-      log: (m) => console.log(m),
+    const projectRoot = path.resolve(args['project-root'] ?? process.cwd());
+    const req = createRequire(path.join(projectRoot, 'package.json'));
+    // Expo CLI's own option resolution: default platforms from the Expo config, same flag semantics
+    const { resolveOptionsAsync } = req('@expo/cli/build/src/export/resolveOptions');
+    const flag = (name: string) => args[name] === 'true' || undefined;
+    const options = await resolveOptionsAsync(projectRoot, {
+      '--platform': platforms.length ? platforms : undefined,
+      '--output-dir': args['output-dir'],
+      '--dev': flag('dev'),
+      '--no-minify': flag('no-minify'),
+      '--no-bytecode': flag('no-bytecode'),
+      '--no-ssg': flag('no-ssg'),
+      '--dump-assetmap': flag('dump-assetmap'),
+      '--source-maps': args['source-maps'] ?? args['dump-sourcemap'],
     });
+    const unsupported = options.platforms.filter((p: string) => !['ios', 'android', 'web'].includes(p));
+    if (unsupported.length) throw new Error(`export: platform ${unsupported.join(', ')} is not supported by the Bun bundler`);
+    const { exportAppAsync } = await import('./export');
+    await exportAppAsync({ projectRoot, ...options, log: (m: string) => console.log(m) });
     process.exit(0);
   } else if (command === 'export:embed' || command === 'bundle') {
     await runExportEmbed(args);

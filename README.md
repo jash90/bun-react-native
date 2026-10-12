@@ -3,7 +3,7 @@
 # bun react native
 
 Expo (SDK 57) / React Native 0.86 app whose whole toolchain runs on **Bun** instead of Node.js:
-package installs, Expo CLI, a Bun-based bundler replacing Metro (release builds, dev server with Fast Refresh and debugger, web), Babel, Jest, ESLint,
+package installs, Expo CLI, a Bun-based bundler replacing Metro (release builds, dev server with Fast Refresh, debugger and web SSR/API routes, `expo export` incl. EAS Update and web server output), Babel, Jest, ESLint,
 TypeScript, CocoaPods/Gradle/Xcode build steps and CI.
 On the device the JavaScript still runs on Hermes.
 
@@ -31,8 +31,9 @@ the shim for child processes; see `docs/bun-react-native/KNOWN-ISSUES.md`).
 ```bash
 bun run start        # Bun dev server (replaces Metro): iOS, Android, web; Fast Refresh, React Native DevTools
 bun run web          # same server, opens the web app in the browser
-bun run export:web   # static web export (Expo Router) with the Bun bundler -> dist/
-bun run start:metro  # Metro (escape hatch; also web:metro)
+bun run export       # expo export on Bun: iOS/Android (EAS Update layout, Hermes bytecode) + web -> dist/
+bun run export:web   # web only, per web.output (single / static / server)
+bun run start:metro  # Metro (escape hatch; also web:metro, export:metro)
 bun run ios          # expo run:ios --no-bundler (Debug build, uses the running dev server)
 bun run android      # expo run:android --no-bundler
 bun run typecheck
@@ -54,7 +55,7 @@ bun run prebuild     # expo prebuild --clean (ios/ and android/ are generated, n
 | `tools/bun/metro-minifier.js` | Metro minifier on Bun's native minifier (`Bun.build`), with terser fallback; tests: `bun run test:tools` |
 | `plugins/with-bun-xcode-env.js` | config plugin: `ios/.xcode.env` → `NODE_BINARY=$(command -v bun)` |
 | `eas.json`, `eas-build-*` scripts | Bun version for EAS Build and the shim on the EAS worker PATH (unverified on EAS) |
-| `tools/bun-bundler/` | Bun bundler replacing Metro: resolver, Babel worker pool, assets, dev server, CLI (`docs/bun-react-native/BUNDLER.md`) |
+| `tools/bun-bundler/` | Bun bundler replacing Metro: resolver, Babel worker pool, assets, dev server (native + web SSR), exports, CLI (`docs/bun-react-native/BUNDLER.md`) |
 | `plugins/with-bun-bundler.js` | config plugin: Xcode `CLI_PATH` / Gradle `cliFile` → Bun bundler (`RN_BUNDLER=metro` to fall back) |
 | `.github/workflows/mobile-bun.yml` | CI: checks, Android and iOS release builds, Node-vs-Bun bundle determinism |
 

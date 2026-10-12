@@ -65,6 +65,7 @@ beforeAll(() => {
   write('assets/icon@2x.png');
   write('assets/icon@3x.png');
   write('assets/other.png');
+  write('assets/hero@2x.png');
 });
 
 afterAll(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -113,6 +114,11 @@ describe('Resolver (Metro-equivalent)', () => {
     const r = resolver().resolve('../assets/icon.png', from(), true) as any;
     expect(r.type).toBe('assetFiles');
     expect(r.filePaths.map((f: string) => path.basename(f))).toEqual(['icon.png', 'icon@2x.png', 'icon@3x.png']);
+  });
+
+  test('assets exist like in Metro: base or an assetResolutions variant; a scaled specifier does not resolve', () => {
+    expect((resolver().resolve('../assets/hero.png', from(), true) as any).type).toBe('assetFiles');
+    expect(() => resolver().resolve('../assets/icon@2x.png', from(), true)).toThrow();
   });
 
   test('Expo layers: asset registry is virtual, HMRClient is redirected to expo', () => {

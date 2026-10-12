@@ -35,14 +35,14 @@ Jak sprawdzić, czy poprawka już jest: `bun upgrade --canary` w osobnym środow
 | Problem | Status | Decyzja |
 |---|---|---|
 | `bun test` + React Native: `Unexpected typeof` (Flow w `react-native/index.js`), brak presetów Jest (`jest-expo`, `@react-native/jest-preset`), mocki natywne | [oven-sh/bun#16945](https://github.com/oven-sh/bun/issues/16945) otwarte, brak PR/planu; wsparcie Flow zamknięte ([#191](https://github.com/oven-sh/bun/issues/191)). Spike PoC: plugin Babel → Flow OK, ale interop ESM/CJS (`RN.View === undefined`) i brak mocków | Jest na runtime Bun (#6) zamiast `bun test` |
-| Bundler Buna „z pudełka” zamiast Metro | `Bun.build` nie ma formatu modułów Metro, HMR RN, pipeline Hermes, rejestru assetów; [oven-sh/bun#123](https://github.com/oven-sh/bun/issues/123) („react-native support”) otwarte | rozwiązane własnym bundlerem na API Buna: [`tools/bun-bundler/`](../../tools/bun-bundler/) ([BUNDLER.md](BUNDLER.md)); Metro zostaje jako wyjście awaryjne i do eksportu OTA |
+| Bundler Buna „z pudełka” zamiast Metro | `Bun.build` nie ma formatu modułów Metro, HMR RN, pipeline Hermes, rejestru assetów; [oven-sh/bun#123](https://github.com/oven-sh/bun/issues/123) („react-native support”) otwarte | rozwiązane własnym bundlerem na API Buna: [`tools/bun-bundler/`](../../tools/bun-bundler/) ([BUNDLER.md](BUNDLER.md)) — także eksport OTA i web; Metro tylko jako wyjście awaryjne |
 | Node na obrazach EAS / runnerach GitHub | obrazy zawierają Node; `oven-sh/setup-bun` działa na runtime Actions `node24` | Node obecny, ale nieużywany przez toolchain (shim) |
 
 ## Ryzyka niezweryfikowane w PoC
 
 | Ryzyko | Źródło | Jak sprawdzić |
 |---|---|---|
-| Expo Router **server output** pod Bunem (`First argument must be an Error object`) | [oven-sh/bun#16418](https://github.com/oven-sh/bun/issues/16418) otwarte; expo#49843 zamknięte jako upstream | `bun expo export --platform web` z `web.output: "server"` |
+| Expo Router **server output** pod Bunem (`First argument must be an Error object`) | [oven-sh/bun#16418](https://github.com/oven-sh/bun/issues/16418) otwarte; expo#49843 zamknięte jako upstream | **Sprawdzone 2026-10-12**: `bun expo export --platform web` z `web.output: "server"` (Metro na Bunie, fikstura z trasami API i `unstable_useServerRendering`) kończy się bez błędu; `bun run export` (bundler Buna) daje ten sam wynik plik po pliku, obsłużony przez `expo-server` |
 | Zawieszanie `expo export` (brak `process.getActiveResourcesInfo`) | [oven-sh/bun#24538](https://github.com/oven-sh/bun/issues/24538), PR #34658 w konflikcie; Expo obeszło w SDK 56 (expo#39266). W PoC eksporty kończyły się normalnie | obserwować czasy w CI |
 | Fast Refresh gubi zmiany w workspace Buna | [expo#46429](https://github.com/expo/expo/issues/46429) otwarte | edycja pliku w pakiecie workspace podczas `expo start` |
 | Patche nieaplikowane na EAS przy ciepłym cache | [oven-sh/bun#33520](https://github.com/oven-sh/bun/issues/33520) otwarte; draft #44621 częściowy | asercja w `eas-build-post-install` (np. `grep` znacznika z patcha) |

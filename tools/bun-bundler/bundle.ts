@@ -11,9 +11,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { BunPlugin } from 'bun';
 
-import { assetModuleSource, getAssetData, saveAssets, type AssetData } from './assets';
+import { assetModuleSource, getAssetData, type AssetData } from './assets';
+import { expoHelpers } from './expo-helpers';
 import { ASSET_REGISTRY_VIRTUAL } from './resolver';
-import { ASSET_REGISTRY_SRC, createProject, requireContextSource } from './shared';
+import { ASSET_REGISTRY_SRC, createProject, metafileOrder, requireContextSource } from './shared';
 import { REQUIRE_CONTEXT_PREFIX } from './transform-worker';
 
 export { ASSET_EXTS, SOURCE_EXTS } from './shared';
@@ -27,6 +28,8 @@ export interface BundleOptions {
   bundleOutput: string;
   sourcemapOutput?: string;
   assetsDest?: string;
+  /** iOS: put images into an asset catalog (`--asset-catalog-dest`, like expo export:embed) */
+  assetCatalogDest?: string;
   routerRoot?: string;
   workers?: number;
   resetCache?: boolean;
@@ -51,7 +54,7 @@ export async function bundle(opts: BundleOptions): Promise<BundleResult> {
   const entry = path.resolve(projectRoot, opts.entryFile);
 
   const modules = new Set<string>();
-  const assets: AssetData[] = [];
+  const assetByPath = new Map<string, AssetData>();
   // Bun does not carry `pluginData` from onResolve to onLoad: keep per-path data here.
   const assetFilesByPath = new Map<string, string[]>();
   // Imports of names a module does not export (typically TypeScript types re-exported without
@@ -101,8 +104,8 @@ export async function bundle(opts: BundleOptions): Promise<BundleResult> {
       build.onLoad({ filter: /.*/, namespace: 'rn-empty' }, () => ({ contents: 'module.exports = {};', loader: 'js' })); // CommonJS like Metro's empty module: named imports are undefined
 
       build.onLoad({ filter: /.*/, namespace: 'rn-asset' }, (args) => {
-        const data = getAssetData(assetFilesByPath.get(args.path)!, projectRoot);
-        assets.push(data);
+        const data = getAssetData(assetFilesByPath.get(args.path)!, projectRoot, '/assets', platform);
+        assetByPath.set(args.path, data);
         for (const f of data.files) modules.add(f);
         return { contents: assetModuleSource(data, '@react-native/assets-registry/registry'), loader: 'js' };
       });
@@ -144,6 +147,7 @@ export async function bundle(opts: BundleOptions): Promise<BundleResult> {
         format: 'iife',
         minify: opts.minify,
         sourcemap: opts.sourcemapOutput ? 'external' : 'none',
+        metafile: true,
         define: {
           __DEV__: String(dev),
           'process.env.NODE_ENV': JSON.stringify(dev ? 'development' : 'production'),
@@ -171,6 +175,8 @@ export async function bundle(opts: BundleOptions): Promise<BundleResult> {
   }
   timings.build = performance.now() - tBuild;
   if (!result.success) throw new Error(`Bun.build failed:\n${result.logs.map((l: any) => String(l)).join('\n')}`);
+  // assets in Metro's graph order (depth-first from the entry, imports in source order), deterministic
+  const assets = metafileOrder(result.metafile, ENTRY_ID).pre.filter((p) => assetByPath.has(p)).map((p) => assetByPath.get(p)!);
   const jsOut = result.outputs.find((o: any) => o.kind === 'entry-point')!;
   const mainCode = (await jsOut.text()).replace(/\n?\/\/# (sourceMappingURL|debugId)=.*$/gm, '');
 
@@ -200,7 +206,15 @@ export async function bundle(opts: BundleOptions): Promise<BundleResult> {
     fs.writeFileSync(opts.sourcemapOutput, JSON.stringify(map));
   }
 
-  if (opts.assetsDest) log(`Copied ${saveAssets(assets, platform, opts.assetsDest)} asset files`);
+  if (opts.assetsDest) {
+    // Expo CLI's own asset persistence (expo export:embed): iOS scale filtering / asset catalog, Android
+    // drawable-*dpi + raw/keep.xml
+    await expoHelpers(projectRoot).persistMetroAssetsAsync(projectRoot, assets, {
+      platform,
+      outputDirectory: opts.assetsDest,
+      iosAssetCatalogDirectory: opts.assetCatalogDest,
+    });
+  }
 
   timings.total = performance.now() - t0;
   timings.cacheHits = project.stats.cacheHits;

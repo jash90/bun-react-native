@@ -15,6 +15,8 @@ import path from 'node:path';
 import { builtinModules } from 'node:module';
 
 const NODE_BUILTINS = new Set(builtinModules);
+/** metro-config defaults: `resolver.assetResolutions` */
+const ASSET_RESOLUTIONS = ['1', '1.5', '2', '3', '4'];
 
 export type Resolution =
   | { type: 'sourceFile'; filePath: string }
@@ -401,19 +403,16 @@ export class Resolver {
     return ext !== '' && this.assetExts.has(ext);
   }
 
-  /** All scale variants of an asset (`img.png`, `img@2x.png`, `img.ios@3x.png`, ...) - Metro: resolveAsset. */
+  /**
+   * metro-resolver resolveAsset + DependencyGraph.resolveAsset: the asset exists when `img.png` or one of the
+   * `img@<assetResolutions>x.png` variants exists (a scaled specifier itself does not resolve). Which files and
+   * scales belong to it (platform variants `img@2x.ios.png` included) is decided by getAssetData (./assets.ts).
+   */
   private resolveAsset(filePath: string): Resolution | null {
-    const dir = path.dirname(filePath);
     const ext = path.extname(filePath);
-    const base = path.basename(filePath, ext).replace(/@\d+(\.\d+)?x$/, '');
-    let entries: string[];
-    try {
-      entries = fs.readdirSync(dir).sort();
-    } catch {
-      return null;
-    }
-    const re = new RegExp(`^${escapeRe(base)}(\\.(${escapeRe(this.opts.platform)}|native))?(@\\d+(\\.\\d+)?x)?${escapeRe(ext)}$`);
-    const files = entries.filter((e) => re.test(e)).map((e) => path.join(dir, e));
+    const base = path.join(path.dirname(filePath), path.basename(filePath, ext));
+    if (/@\d+(?:\.\d+)?x$/.test(base)) return null;
+    const files = [base + ext, ...ASSET_RESOLUTIONS.map((r) => `${base}@${r}x${ext}`)].filter((f) => this.stat(f) === 'f').map((f) => this.realPath(f));
     if (!files.length) return null;
     return { type: 'assetFiles', filePaths: files };
   }
@@ -543,6 +542,3 @@ function matchSubpathPattern(pattern: string, subpath: string): string | null {
   return null;
 }
 
-function escapeRe(s: string) {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}

@@ -51,6 +51,11 @@ jobs:
           bun run export:web
           test -f dist/index.html && test -f dist/explore.html
           grep -q '_expo/static/js/web/entry-' dist/index.html
+      - name: Bun bundler native export (EAS Update layout, Hermes bytecode)
+        run: |
+          bun run export --platform android --output-dir dist-ota
+          test -f dist-ota/metadata.json
+          ls dist-ota/_expo/static/js/android/entry-*.hbc
 
   android:
     runs-on: ubuntu-latest

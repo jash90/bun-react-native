@@ -104,6 +104,8 @@ export interface ProjectOptions {
   /** web only: 'node' builds the server (static rendering) bundle */
   environment?: 'client' | 'node';
   routerRoot?: string;
+  /** evaluated Expo config (read with @expo/config when omitted) */
+  exp?: any;
   workers?: number;
   resetCache?: boolean;
 }
@@ -122,19 +124,56 @@ export function readTsconfigPaths(projectRoot: string) {
   }
 }
 
-export function readAppJson(projectRoot: string): any {
-  try {
-    return JSON.parse(fs.readFileSync(path.join(projectRoot, 'app.json'), 'utf8'));
-  } catch {
-    return null;
-  }
+/** Evaluated Expo config (app.json / app.config.*, config plugins' `extra`), the way Expo CLI reads it. */
+export function getExpoConfig(projectRoot: string): any {
+  const req = createRequire(path.join(projectRoot, 'package.json'));
+  const { getConfig } = req('@expo/config');
+  return getConfig(projectRoot, { skipSDKVersionRequirement: true }).exp;
 }
 
-/** Files matched by `require.context(dir, recursive, filter)` as `./relative` keys (Metro semantics). */
+/** Expo Router directory (`src/app` or `app`, or the plugin's `root`), from Expo CLI. */
+export function getRouterRoot(projectRoot: string, exp = getExpoConfig(projectRoot)): string {
+  const req = createRequire(path.join(projectRoot, 'package.json'));
+  return req('@expo/cli/build/src/start/server/metro/router').getRouterDirectoryModuleIdWithManifest(projectRoot, exp);
+}
+
+/** `experiments.baseUrl` without trailing slashes ('' when unset), from Expo CLI. */
+export function getBaseUrl(projectRoot: string, exp = getExpoConfig(projectRoot)): string {
+  const req = createRequire(path.join(projectRoot, 'package.json'));
+  return req('@expo/cli/build/src/start/server/middleware/metroOptions').getBaseUrlFromExpoConfig(exp);
+}
+
+/**
+ * Paths of a Bun.build metafile walked depth-first from `entry`, dependencies in import order (Bun keeps source
+ * order): `pre` = first-visit order (Metro's graph order), `post` = after the dependencies (Metro's CSS order).
+ * Plugin namespaces (`rn-asset:/abs/path`) are stripped; relative keys are resolved against the cwd.
+ */
+export function metafileOrder(metafile: any, entry: string): { pre: string[]; post: string[] } {
+  const norm = (p: string) => {
+    const bare = p.replace(/^[a-z][a-z-]*:(?=[/\0])/, '');
+    return bare.startsWith('\0') || path.isAbsolute(bare) ? bare : path.resolve(bare);
+  };
+  const graph = new Map<string, string[]>();
+  for (const [k, v] of Object.entries<any>(metafile?.inputs ?? {})) graph.set(norm(k), (v.imports ?? []).map((i: any) => norm(i.path)));
+  const pre: string[] = [];
+  const post: string[] = [];
+  const seen = new Set<string>();
+  const visit = (file: string) => {
+    if (seen.has(file)) return;
+    seen.add(file);
+    pre.push(file);
+    for (const dep of graph.get(file) ?? []) visit(dep);
+    post.push(file);
+  };
+  visit(norm(entry));
+  return { pre, post };
+}
+
+/** Files matched by `require.context(dir, recursive, filter)` as `./relative` keys, sorted by path like Metro. */
 export function listContextFiles(dir: string, recursive: boolean, filter: RegExp): string[] {
   const out: string[] = [];
   const walk = (abs: string, rel: string) => {
-    for (const e of fs.readdirSync(abs, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1))) {
+    for (const e of fs.readdirSync(abs, { withFileTypes: true })) {
       const childRel = `${rel}/${e.name}`;
       if (e.isDirectory()) {
         if (recursive && e.name !== 'node_modules') walk(path.join(abs, e.name), childRel);
@@ -144,19 +183,63 @@ export function listContextFiles(dir: string, recursive: boolean, filter: RegExp
     }
   };
   walk(dir, '.');
-  return out;
+  return out.sort(); // metro createFileMap: files.slice().sort()
 }
 
-/** CommonJS source of a `require.context` module: `ctx(key)`, `ctx.keys()`, `ctx.resolve(key)`, `ctx.id`. */
-export function requireContextSource(projectRoot: string, spec: { dir: string; recursive: boolean; filter: { pattern: string; flags: string } }) {
+export interface ContextSpec {
+  dir: string;
+  recursive: boolean;
+  filter: { pattern: string; flags: string };
+  mode: string;
+}
+
+/**
+ * metro/src/lib/contextModuleTemplates.js: the `require.context` module. Modules sit behind enumerable getters,
+ * `ctx(key)` returns `map[key]` (undefined for unknown keys; expo-router relies on it for generated routes), an
+ * empty context throws MODULE_NOT_FOUND, `resolve` is unimplemented. `load(i)` returns the code loading file i.
+ */
+export function contextModuleSource(spec: ContextSpec, files: string[], load: (i: number) => string): string {
+  if (!files.length) {
+    return `function metroEmptyContext(request) {
+  let e = new Error('No modules in context');
+  e.code = 'MODULE_NOT_FOUND';
+  throw e;
+}
+metroEmptyContext.keys = () => ([]);
+metroEmptyContext.resolve = function metroContextResolve(request) {
+  throw new Error('Unimplemented Metro module context functionality');
+}
+module.exports = metroEmptyContext;`;
+  }
+  const body =
+    spec.mode === 'eager'
+      ? 'return Promise.resolve().then(() => map[request]);'
+      : spec.mode === 'sync' || spec.mode === 'lazy' || spec.mode === 'lazy-once'
+        ? 'return map[request];'
+        : null;
+  if (body == null) throw new Error(`require.context: unsupported mode "${spec.mode}"`);
+  const entries = files.map((rel, i) => `  ${JSON.stringify(rel)}: { enumerable: true, get() { return ${load(i)}; } },`).join('\n');
+  return `const map = Object.defineProperties({}, {
+${entries}
+});
+function metroContext(request) {
+  ${body}
+}
+metroContext.keys = function metroContextKeys() {
+  return Object.keys(map);
+};
+metroContext.resolve = function metroContextResolve(request) {
+  throw new Error('Unimplemented Metro module context functionality');
+}
+module.exports = metroContext;`;
+}
+
+/** `require.context` module for Bun.build (absolute requires; `lazy` modes use import() like Metro). */
+export function requireContextSource(projectRoot: string, spec: ContextSpec) {
+  void projectRoot;
   const files = listContextFiles(spec.dir, spec.recursive, new RegExp(spec.filter.pattern, spec.filter.flags));
-  const entries = files.map((rel) => `  ${JSON.stringify(rel)}: () => require(${JSON.stringify(path.join(spec.dir, rel))}),`).join('\n');
-  return `var map = {\n${entries}\n};
-function ctx(key) { var f = map[key]; if (!f) { var e = new Error("Cannot find module '" + key + "'"); e.code = 'MODULE_NOT_FOUND'; throw e; } return f(); }
-ctx.keys = function () { return Object.keys(map); };
-ctx.resolve = function (key) { return key; };
-ctx.id = ${JSON.stringify(path.relative(projectRoot, spec.dir))};
-module.exports = ctx;`;
+  const lazy = spec.mode === 'lazy' || spec.mode === 'lazy-once';
+  return contextModuleSource(spec, files, (i) => `${lazy ? 'import' : 'require'}(${JSON.stringify(path.join(spec.dir, files[i]))})`);
 }
 
 export function createProject(opts: ProjectOptions) {
@@ -164,12 +247,15 @@ export function createProject(opts: ProjectOptions) {
   const projectRequire = createRequire(path.join(projectRoot, 'package.json'));
   const isWeb = platform === 'web';
   const isServer = isWeb && opts.environment === 'node';
+  const exp = opts.exp ?? getExpoConfig(projectRoot);
+  const routerRoot = opts.routerRoot ?? getRouterRoot(projectRoot, exp);
+  const baseUrl = getBaseUrl(projectRoot, exp);
   const customTransformOptions: Record<string, string> = {
     ...(isWeb ? {} : { engine: 'hermes', bytecode: '1' }),
     ...(isServer ? { environment: 'node' } : {}),
-    routerRoot: opts.routerRoot ?? 'src/app',
-    reactCompiler: String(!!readAppJson(projectRoot)?.expo?.experiments?.reactCompiler),
-    baseUrl: '',
+    routerRoot,
+    reactCompiler: String(!!exp.experiments?.reactCompiler),
+    baseUrl,
   };
   let shimsDir: string | null = null;
   try {
@@ -275,6 +361,9 @@ export function createProject(opts: ProjectOptions) {
     projectRoot,
     platform,
     dev,
+    exp,
+    routerRoot,
+    baseUrl,
     isWeb,
     isServer,
     projectRequire,
