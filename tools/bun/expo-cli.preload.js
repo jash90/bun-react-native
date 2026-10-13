@@ -29,6 +29,8 @@ if (process.versions.bun) {
         require('../bun-bundler/embed.ts').installBunExportEmbed(root);
       }
     }
+    // Metro export: the web render function before the client bundle, so module IDs do not depend on a race
+    if (!bun && isExpoCli && command === 'export') require('./expo-export-order').install(root);
     if (!bun && isExpoCli && command === 'export:embed' && process.env.RN_BUNDLER_RESET_CACHE !== '1') {
       process.argv = process.argv.filter((a, i) => i < 2 || a !== '--reset-cache');
     }

@@ -60,6 +60,7 @@ that alias breaks autolinking ([oven-sh/bun#40482](https://github.com/oven-sh/bu
 | `tools/bun/node-compat.preload.js` | Node behaviour Metro and Expo depend on: sorted `fs.readdir*` ([#44947](https://github.com/oven-sh/bun/issues/44947)), `util.parseEnv` key order, `net.Server#listen` callback ([#45090](https://github.com/oven-sh/bun/issues/45090)) |
 | `tools/bun/jest.preload.js` | makes Jest under Bun behave as it does under Node |
 | `tools/bun-bundler/metro-on-bun.ts` | Metro transform workers as Bun processes that load the preload, `EXPO_PUBLIC_*` in cache keys, Bun's minifier for web, RSC dev polyfill |
+| `tools/bun/expo-export-order.js` | deterministic `expo export`: platform bundles one after another and the web render function before the client bundle, so module IDs and bundle hashes do not depend on Expo's parallel-bundling race (on Node too); `BUN_RN_EXPORT_ORDER=0` turns it off |
 | `tools/bun-bundler/` | the optional Bun bundler: Expo/Metro resolver chain, Babel worker pool, CSS, assets, dev server with HMR, exports ([BUNDLER.md](docs/bun-react-native/BUNDLER.md)) |
 | `app.plugin.js` | Xcode script phases use Bun (`NODE_BINARY` in `ios/.xcode.env`) |
 | `tools/cli/` | `init`, `doctor`, `compare`, `eas-build-post-install` |

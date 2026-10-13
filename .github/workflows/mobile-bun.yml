@@ -176,19 +176,19 @@ jobs:
             # Separate TMPDIR per runtime: Metro's disk cache lives in $TMPDIR/metro-cache and is reused even with
             # --reset-cache, which would let the Bun run serve modules transformed by the Node run.
             mkdir -p out-$rt/assets tmp-$rt && rm -rf .expo/cache
-            if [ $rt = node ]; then RUN="$NODE ../node_modules/expo/bin/cli"; else RUN="bun expo"; fi
+            # Node gets the same fixed bundling order the package preload gives Expo on Bun - without it Expo's own
+            # export output varies between runs on Node too (module ID race, KNOWN-ISSUES #21)
+            if [ $rt = node ]; then RUN="$NODE --require ../scripts/node-export-order.cjs ../node_modules/expo/bin/cli"; else RUN="bun expo"; fi
             # --minify false: what native Hermes release builds do (Gradle/Xcode)
             TMPDIR=$PWD/tmp-$rt $RUN export:embed --platform android --dev false --minify false --entry-file "$ENTRY" \
               --bundle-output out-$rt/index.android.bundle --assets-dest out-$rt/assets --reset-cache
-            # web (minified): Bun's minifier intentionally differs from terser - compare with terser on both
-            METRO_BUN_MINIFIER=0 TMPDIR=$PWD/tmp-$rt $RUN export --platform web --output-dir web-$rt
+            # expo export, all platforms; web minified with terser on both (Bun's minifier intentionally differs)
+            METRO_BUN_MINIFIER=0 TMPDIR=$PWD/tmp-$rt $RUN export --output-dir export-$rt
           done
           cmp out-node/index.android.bundle out-bun/index.android.bundle
           diff -r out-node/assets out-bun/assets
-          # web: module IDs follow an Expo race between the render and client bundles, on Node too (KNOWN-ISSUES #21) -
-          # same files and HTML (hashed names normalized), and the same module code with the IDs left out
-          bunx bun-react-native compare web-node web-bun
-          bun ../scripts/compare-web-modules.ts web-node web-bun
+          # .hbc: same names (= same JS); contents differ by Expo's random hermesc temp path (KNOWN-ISSUES #16)
+          if diff -rq export-node export-bun | grep -v '\.hbc differ$' | grep .; then exit 1; fi
 
   # Next Expo SDK (expo@next, SDK 58): the toolchain on a copy of the example upgraded with `expo install --fix`.
   # The example's own code targets SDK 57 (typecheck/Jest are not run here); this checks bundling only.
@@ -231,5 +231,10 @@ jobs:
           done
           cmp out-node/index.android.bundle out-bun/index.android.bundle
           diff -r out-node/assets out-bun/assets
-      - run: bun expo export --output-dir dist
+      - name: expo export (all platforms) Node = Bun
         working-directory: ${{ env.APP }}
+        run: |
+          NODE="$(command -v node)"
+          METRO_BUN_MINIFIER=0 TMPDIR=$PWD/tmp-node "$NODE" --require "$GITHUB_WORKSPACE/scripts/node-export-order.cjs" node_modules/expo/bin/cli export --output-dir export-node
+          METRO_BUN_MINIFIER=0 TMPDIR=$PWD/tmp-bun bun expo export --output-dir export-bun
+          if diff -rq export-node export-bun | grep -v '\.hbc differ$' | grep .; then exit 1; fi

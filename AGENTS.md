@@ -54,6 +54,9 @@ Docs: https://docs.expo.dev/eas/index.md
   `jest.preload.js`, `expo-cli.preload.js` (`tools/bun-bundler/metro-on-bun.ts` for every Expo CLI process: Metro
   transforms in jest-worker processes that load the preload (`METRO_BUN_WORKERS=threads`: Bun threads), EXPO_PUBLIC_* in cache keys, Bun's minifier for web, RSC dev polyfill;
   Metro internals from Expo CLI's copy via `tools/bun/metro-require.js`).
+- `expo export` on Metro bundles platforms one after another and the web render function before the client bundle
+  (`tools/bun/expo-export-order.js`, KNOWN-ISSUES #21): Expo's parallel bundling shares one module-ID factory, so the
+  output otherwise varies between runs (on Node too). Compare with Node via `node --require scripts/node-export-order.cjs`.
 - Engine: **Metro on the Bun runtime by default** (byte-identical to Metro on Node; CI `bundle-determinism`).
   `RN_BUNDLER=bun` routes `expo start|run:*|export|export:embed` and expo-updates' build step to the Bun bundler
   (`tools/bun-bundler/`: Bun.build + Metro-equivalent resolver + Expo Babel transform; dev server with Metro's own

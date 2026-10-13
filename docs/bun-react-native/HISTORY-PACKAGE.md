@@ -76,7 +76,9 @@ npm po v1 (do tego czasu `github:jash90/bun-react-native`); zgłoszenie błędó
    zielone (`checks`, `consumer`, `android`, `ios`, `bundle-determinism`, `sdk-next`). Hipoteza o wątkach (#22 w
    poprzedniej wersji) była błędna; procesy jest-worker zostają domyślne (wynik i czas jak wątki, kod Metro).
 7. CI na `cf1f92a`: `bundle-determinism` web — tym razem **Node** dał inny hash (`entry-156c…`, „Web Bundled” przed „λ
-   Bundled”), Bun ten sam co zwykle (`entry-e62e…`): wyścig z #21 dotyczy obu runtime'ów, więc bajtowe `diff -r` webu
-   jest z natury niestabilne. Zastąpione porównaniem bez ID modułów (`scripts/compare-web-modules.ts`): SDK 57 i SDK 58
-   Node vs Bun — 0 różnic, kontrola negatywna (inny minifikator) — różnica wykryta.
-
+   Bundled”), Bun zwykły (`entry-e62e…`). Przyczyna w kodzie Expo: jedna numeryczna fabryka ID serwera Metro eksportu,
+   a bundle (platformy, render i klient web) budowane równolegle (#21) — wyścig dotyczy obu runtime'ów; lokalnie pełny
+   eksport na Node dał raz też inne natywne `.hbc`. Pierwsza wersja poprawki porównywała web bez ID modułów — zastąpiona
+   usunięciem przyczyny: `tools/bun/expo-export-order.js` (platformy po kolei, render przed klientem). Wynik: pełny
+   eksport Node×2, Bun×2 i Node vs Bun identyczne (poza `.hbc`, #16), web SDK 58 Node vs Bun bajt w bajt; CI znowu
+   porównuje pełny eksport bajtowo (Node z tą samą kolejnością przez `scripts/node-export-order.cjs`).
