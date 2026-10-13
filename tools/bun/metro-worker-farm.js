@@ -30,9 +30,8 @@ function installIn(metroDir) {
   const workerPath = path.join(metroDir, 'src', 'DeltaBundler', 'Worker.js');
 
   // Not `extends`: Metro's constructor resolves and requires its Worker.js in this thread (maxWorkers 1) or forks
-  // jest-worker - neither is used here, and under load Bun failed that require.resolve('./Worker.js') when Expo's web
-  // static rendering created two bundlers at once (CI, linux x64). The prototype still provides Metro's error
-  // formatting (_formatBabelError, _formatGenericError).
+  // jest-worker - neither is used here. The prototype still provides Metro's error formatting (_formatBabelError,
+  // _formatGenericError).
   class BunWorkerFarm {
     static isBunWorkerFarm = true;
 
