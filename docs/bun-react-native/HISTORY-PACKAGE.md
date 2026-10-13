@@ -68,4 +68,11 @@ npm po v1 (do tego czasu `github:jash90/bun-react-native`); zgłoszenie błędó
    dla 3 silników, `RN_BUNDLER=bun` export = Metro (0 różnic), czas embed bez zmian. Docker na tym Macu przestał
    uruchamiać kontenery, więc linux x64 sprawdza CI. Job `sdk-next`: `bunfig.toml` przykładu usuwany przed instalacją
    (preload musi się rozwiązać, #20), potem `init`.
+6. Przyczyna (#22) znaleziona macierzą w CI (`debug-web`, usunięta po diagnozie): w każdym wariancie (Node na PATH lub
+   nie, shim na PATH, wcześniejszy eksport Android, cache transpilera Buna zimny/wyłączony) pierwszy eksport web po
+   świeżej instalacji padał, drugi przechodził; ze świeżym `HOME` padał każdy; jedyne nowe pliki po pierwszym przebiegu
+   to `sharp-cli` w `~/.bun/install/cache` — runtime auto-install Buna wywołany przez wyszukiwanie globalnego
+   `sharp-cli` w Expo (`resolveGlobal`). Poprawka: `[install] auto = "disable"`. CI na `6b3088e`: wszystkie joby
+   zielone (`checks`, `consumer`, `android`, `ios`, `bundle-determinism`, `sdk-next`). Hipoteza o wątkach (#22 w
+   poprzedniej wersji) była błędna; procesy jest-worker zostają domyślne (wynik i czas jak wątki, kod Metro).
 

@@ -52,7 +52,7 @@ Docs: https://docs.expo.dev/eas/index.md
   directory: `tools/bun/path.preload.js` (node -> Bun shim `tools/bin/node` first on PATH for child processes),
   `node-compat.preload.js` (sorted readdir, util.parseEnv order, net listen callback - KNOWN-ISSUES #4/#5, #18, #19),
   `jest.preload.js`, `expo-cli.preload.js` (`tools/bun-bundler/metro-on-bun.ts` for every Expo CLI process: Metro
-  transforms in jest-worker processes that load the preload (`METRO_BUN_WORKERS=threads`: Bun threads, KNOWN-ISSUES #22), EXPO_PUBLIC_* in cache keys, Bun's minifier for web, RSC dev polyfill;
+  transforms in jest-worker processes that load the preload (`METRO_BUN_WORKERS=threads`: Bun threads), EXPO_PUBLIC_* in cache keys, Bun's minifier for web, RSC dev polyfill;
   Metro internals from Expo CLI's copy via `tools/bun/metro-require.js`).
 - Engine: **Metro on the Bun runtime by default** (byte-identical to Metro on Node; CI `bundle-determinism`).
   `RN_BUNDLER=bun` routes `expo start|run:*|export|export:embed` and expo-updates' build step to the Bun bundler

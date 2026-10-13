@@ -6,8 +6,7 @@
 //     started in the app directory, so it loads the bunfig preload with the Node-compat shims. Expo's default
 //     worker_threads would run without them (bunfig preload does not reach threads; KNOWN-ISSUES #4/#5) and pick other
 //     asset scales. METRO_BUN_WORKERS=threads uses Bun worker threads that load the shims themselves
-//     (../bun/metro-worker-farm.js) - same output and speed, but Bun's resolver failed under concurrent resolution
-//     from the main thread and the threads on linux x64 (KNOWN-ISSUES #22)
+//     (../bun/metro-worker-farm.js) - same output and speed; processes are Metro's own code path
 //   - EXPO_PUBLIC_* / BABEL_ENV in `cacheVersion` (cache keys only): ./cli.ts keeps Metro's cache across
 //     --reset-cache of native builds, and release transforms inline those values
 //   - React Server Components in development: polyfill for an Expo SDK 57 bug (../bun/rsc-dev-polyfill.js,
