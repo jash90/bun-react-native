@@ -1,0 +1,38 @@
+# TEMPORARY (PR #1): which condition makes `bun expo export --platform web` fail to resolve Metro's files on linux x64
+name: debug-web
+on: pull_request
+jobs:
+  variant:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [node-first-terser, bun-only-terser, bun-only-bunmin, node-on-path-no-node-run, tmpdir-outside]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.3
+      - uses: actions/setup-node@v4
+        if: matrix.variant != 'bun-only-terser' && matrix.variant != 'bun-only-bunmin'
+        with:
+          node-version: 22
+      - run: bun install --frozen-lockfile
+      - name: 3 runs
+        working-directory: example
+        env:
+          EXPO_NO_TELEMETRY: 1
+        run: |
+          V=${{ matrix.variant }}
+          if [ $V = node-first-terser ]; then
+            mkdir -p tmp-node && METRO_BUN_MINIFIER=0 TMPDIR=$PWD/tmp-node node ../node_modules/expo/bin/cli export --platform web --output-dir web-node > /dev/null 2>&1; echo "node run: $?"
+          fi
+          for i in 1 2 3; do
+            rm -rf web-bun .expo/cache
+            if [ $V = tmpdir-outside ]; then T=$RUNNER_TEMP/tmp-$i; else T=$PWD/tmp-bun-$i; fi
+            mkdir -p $T
+            if [ $V = bun-only-bunmin ]; then M=1; else M=0; fi
+            METRO_BUN_MINIFIER=$M TMPDIR=$T bun expo export --platform web --output-dir web-bun > /tmp/w$i.log 2>&1; r=$?
+            echo "$V run $i: exit=$r $(grep -m1 -oE '(Cannot find module|Unexpected while resolving)[^]]{0,90}' /tmp/w$i.log)"
+          done
+          echo "node=$(command -v node) bunx-node=$(bun -e 'console.log(Bun.which("node"))')"
