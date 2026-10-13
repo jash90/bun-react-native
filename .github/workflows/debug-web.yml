@@ -7,7 +7,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [control, pre-expo-env, no-ts-setup, android-first]
+        variant: [control, cold-cache-each-run, cache-disabled, warm-cache-from-other-cmd]
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -26,14 +26,14 @@ jobs:
           set +e
           V=${{ matrix.variant }}
           case $V in
-            pre-expo-env) printf '/// <reference types="expo/types" />\n' > expo-env.d.ts;;
-            no-ts-setup) export EXPO_NO_TYPESCRIPT_SETUP=1;;
-            android-first) bun expo export --platform android --output-dir dist-a > /tmp/a.log 2>&1; echo "android first: $?";;
+            cache-disabled) export BUN_RUNTIME_TRANSPILER_CACHE_PATH=0;;
+            warm-cache-from-other-cmd) bun -e "require('$PWD/../node_modules/metro/src/DeltaBundler/WorkerFarm.js'); console.log('warmed')";;
           esac
           git -C .. status --porcelain --ignored -- example | grep -v node_modules > /tmp/before.txt
           echo "shell node: $(command -v node) $(node -p 'process.versions.bun || process.version')"
-          for i in 1 2; do
+          for i in 1 2 3; do
             rm -rf web-bun .expo/cache; T=$PWD/tmp-bun-$i; mkdir -p $T
+            [ $V = cold-cache-each-run ] && export BUN_RUNTIME_TRANSPILER_CACHE_PATH=$RUNNER_TEMP/tc-$i
             METRO_BUN_MINIFIER=0 TMPDIR=$T bun expo export --platform web --output-dir web-bun > /tmp/w$i.log 2>&1; r=$?
             echo "$V run $i: exit=$r"
             [ $r != 0 ] && grep -m2 -E 'Cannot find|Unexpected' /tmp/w$i.log
