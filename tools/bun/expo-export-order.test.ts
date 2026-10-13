@@ -71,6 +71,31 @@ test('DOM component bundles share the queue with the platform bundles', async ()
   ]);
 });
 
+test('a bundle that calls another queued bundle method runs it directly (Expo: native -> legacySinglePage)', async () => {
+  const log: string[] = [];
+  class DevServer {
+    async nativeExportBundleAsync(_exp: unknown, { platform }: { platform: string }) {
+      log.push(`start ${platform}`);
+      const inner = await this.legacySinglePageExportBundleAsync({ dom: `${platform}-inner` });
+      log.push(`end ${platform}`);
+      return inner;
+    }
+    async legacySinglePageExportBundleAsync({ dom }: { dom: string }) {
+      await sleep(5);
+      log.push(dom);
+      return dom;
+    }
+    getStaticResourcesAsync() {}
+    getStaticRenderFunctionAsync() {}
+  }
+  applyExportOrder(DevServer.prototype);
+  const dev = new DevServer();
+  const timeout = sleep(1000).then(() => 'deadlock');
+  const result = await Promise.race([Promise.all(['ios', 'android'].map((platform) => dev.nativeExportBundleAsync({}, { platform }))), timeout]);
+  expect(result).toEqual(['ios-inner', 'android-inner']);
+  expect(log).toEqual(['start ios', 'ios-inner', 'end ios', 'start android', 'android-inner', 'end android']);
+});
+
 test('a failing platform bundle does not stop the next one', async () => {
   const log: string[] = [];
   class DevServer {

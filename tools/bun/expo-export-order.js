@@ -9,7 +9,12 @@
 // BUN_RN_EXPORT_ORDER=0 keeps Expo's parallel bundling.
 'use strict';
 const path = require('node:path');
+const { AsyncLocalStorage } = require('node:async_hooks');
 const { createRequire } = require('node:module');
+
+/** set while a queued bundle runs: nested bundle calls (nativeExportBundleAsync -> legacySinglePageExportBundleAsync)
+ * already hold the queue and run directly - queueing them behind their own caller would deadlock */
+const inQueue = new AsyncLocalStorage();
 
 function install(projectRoot) {
   if (process.env.BUN_RN_EXPORT_ORDER === '0') return;
@@ -28,7 +33,8 @@ function applyExportOrder(proto) {
     const bundle = proto[name];
     if (typeof bundle !== 'function') continue;
     proto[name] = function (...args) {
-      const run = () => bundle.apply(this, args);
+      if (inQueue.getStore()) return bundle.apply(this, args);
+      const run = () => inQueue.run(true, () => bundle.apply(this, args));
       const result = (this.__bunRnBundleQueue ?? Promise.resolve()).then(run, run);
       this.__bunRnBundleQueue = result.catch(() => {});
       return result;
