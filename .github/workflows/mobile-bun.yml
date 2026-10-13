@@ -185,7 +185,10 @@ jobs:
           done
           cmp out-node/index.android.bundle out-bun/index.android.bundle
           diff -r out-node/assets out-bun/assets
-          diff -r web-node web-bun
+          # web: module IDs follow an Expo race between the render and client bundles, on Node too (KNOWN-ISSUES #21) -
+          # same files and HTML (hashed names normalized), and the same module code with the IDs left out
+          bunx bun-react-native compare web-node web-bun
+          bun ../scripts/compare-web-modules.ts web-node web-bun
 
   # Next Expo SDK (expo@next, SDK 58): the toolchain on a copy of the example upgraded with `expo install --fix`.
   # The example's own code targets SDK 57 (typecheck/Jest are not run here); this checks bundling only.
