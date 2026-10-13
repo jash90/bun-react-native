@@ -1,9 +1,12 @@
-# Bundler na Bunie (zamiast Metro)
+# Bundler na Bunie (opcjonalny silnik zamiast Metro)
 
-Stan: **2026-10-12**. Kod: [`tools/bun-bundler/`](../../tools/bun-bundler/). Zastępuje Metro we wszystkich ścieżkach:
-natywne buildy release (Xcode, Gradle), dev server (`bun run start`: iOS, Android i web — Fast Refresh, debugger,
-SSR i trasy API), eksport (`bun run export`: OTA dla EAS Update, web `single`/`static`/`server`). Metro zostaje
-wyłącznie jako wyjście awaryjne: `RN_BUNDLER=metro`, `bun run start:metro`, `bun run web:metro`, `bun run export:metro`.
+Stan: **2026-10-12**. Kod: [`tools/bun-bundler/`](../../tools/bun-bundler/). **Od paczki `bun-react-native` 0.1.0
+domyślnym silnikiem jest Metro na runtime Buna** (bajt w bajt jak Metro na Node, mniej punktów zaczepienia w
+wewnętrznych modułach Expo, w pomiarach nie wolniejsze — decyzja z analizy 2026-10-12, HISTORY etap 13). Bundler Buna
+włącza `RN_BUNDLER=bun` dla zwykłych komend Expo (preload `tools/bun/expo-cli.preload.js`): natywne buildy release
+(Xcode, Gradle, prebundle `expo run:* Release`), dev server (`expo start` / `run:*`: iOS, Android i web — Fast
+Refresh, debugger, SSR i trasy API), eksport (`expo export`: OTA dla EAS Update, web `single`/`static`/`server`),
+zasoby `expo-updates`. Projekty z RSC albo nieobsługiwanym `metro.config.js` zostają wtedy na Metro (na Bunie).
 
 Zasada: **bundlowanie robi Bun** (`Bun.build`, `Bun.serve`, `Worker`, `Bun.hash`), a funkcje Expo CLI, które nie
 uruchamiają Metro (manifesty tras, serializacja HTML, favicon, folder `public/`, zapis plików, `metadata.json`,
@@ -35,12 +38,12 @@ Dzięki temu wynik ma ten sam układ co `expo export` — sprawdzone plik po pli
 | `metro-on-bun.ts` | każdy proces Expo CLI na Bunie (preload, `cli.ts`), gdy działa Metro: `WorkerFarm` na wątkach Buna z shimami, `EXPO_PUBLIC_*` w `cacheVersion`, polyfill RSC w dev — przez `withMetroMultiPlatformAsync` Expo, więc także dla obcych `metro.config.js` | — |
 | `updates.ts` | `expo-updates` w buildach Release/Debug: `createUpdatesResources.js` dostaje assety `app.manifest` z grafu bundlera Buna (ten sam wpis, platforma i tryb) zamiast z serwera Metro — `createMetroServerAndBundleRequestAsync`/`exportEmbedAssetsAsync` z `expoUpdatesExports` Expo podmienione przez preload | `createManifestForBuildAsync` + Metro |
 | `metro-config-support.ts` | porównuje `metro.config.js` z `getDefaultConfig` Expo: `resolver.sourceExts`, `resolver.assetExts` i `transformer.babelTransformerPath` obsługuje bundler Buna, każda inna zmiana (oraz RSC, config jako funkcja/promise) przełącza komendę na Metro na runtime Buna z komunikatem o przyczynie | `loadConfig` Metro |
-| `expo-dev-server.ts` | `bun run start` = `expo start`: `BunBundlerDevServer` (podklasa `BundlerDevServer` Expo) zamiast `MetroBundlerDevServer` — QR, klawisze `s/a/i/w/r/j/m/o/c/?`, Expo Go (pobranie i uruchomienie) i development buildy, tunel, Bonjour, typy tras; middleware Expo (manifest Expo Go / dev clientów, `/_expo/loading`, `/_expo/link`, `/_expo/plugins`, `/_expo/open`, `/_expo/touch`, `/_expo/error-overlay-meta`, `/_expo/debugger`) na wewnętrznym `node:http` + `connect`, CORS Expo dla każdego żądania | `MetroBundlerDevServer`, `instantiateMetro` |
+| `expo-dev-server.ts` | `RN_BUNDLER=bun bun expo start` = `expo start`: `BunBundlerDevServer` (podklasa `BundlerDevServer` Expo) zamiast `MetroBundlerDevServer` — QR, klawisze `s/a/i/w/r/j/m/o/c/?`, Expo Go (pobranie i uruchomienie) i development buildy, tunel, Bonjour, typy tras; middleware Expo (manifest Expo Go / dev clientów, `/_expo/loading`, `/_expo/link`, `/_expo/plugins`, `/_expo/open`, `/_expo/touch`, `/_expo/error-overlay-meta`, `/_expo/debugger`) na wewnętrznym `node:http` + `connect`, CORS Expo dla każdego żądania | `MetroBundlerDevServer`, `instantiateMetro` |
 | `message-socket.ts` | `/message` w protokole Expo (`getid`, `getpeers`, żądania między klientami, broadcast tylko `reload`/`devMenu` od zaufanych klientów); `/expo-dev-plugins/broadcast` | `createMessageSocket`, `DevToolsPluginWebsocketEndpoint` |
 | `embed.ts` | `export:embed`: moduł `exportEmbedAsync` Expo przepięty na Buna (`installBunExportEmbed`) — Expo parsuje argumenty i godzi bundle „eager”; Bun robi bundle, mapę, assety, `--bytecode`, eksport serwera (`web.output: "server"` → `.expo/server/<platform>`), komponenty DOM, błędy w formacie Xcode. `tools/bun/expo-cli.preload.js` zakłada to samo w procesach `expo run:*`/`export:embed`, więc prebundle „eager” robi Bun | `@expo/cli/build/src/export/embed` |
 | `env.ts` | pliki `.env` jak Expo CLI (`.env.<tryb z --dev>`, zmienne z powłoki wygrywają, przeładowanie w dev); automatyczne wczytywanie Buna wyłączone (`bunfig.toml` `env = false`) | `@expo/cli` `utils/nodeEnv`, `@expo/env` |
 | `sourcemap.ts` | mapy w kształcie Expo: prelude/polyfille/graf sklejone z mapowaniami, źródła `/` względem roota serwera, `?ctx=` dla `require.context`, `x_google_ignoreList`, `x_facebook_sources`, `debugId`; mapy dev jak w Metro (ścieżki bezwzględne) | `@expo/metro-config` `serializer/sourceMap`, `metro-source-map` Generator |
-| `plugins/with-bun-bundler.js` | iOS: `CLI_PATH` w `ios/.xcode.env`; Android: `cliFile` w `app/build.gradle` | — |
+| `../bun/expo-cli.preload.js` (preload paczki) | kieruje `expo start|run:*|export|export:embed` i `createUpdatesResources.js` do bundlera Buna przy `RN_BUNDLER=bun`; kroki bundlowania Xcode/Gradle startują z katalogu aplikacji, więc działa bez zmian w plikach natywnych | — |
 
 Cache transformacji: `node_modules/.cache/bun-rn-bundler/<platforma>[-server]-<dev|prod>/<Bun.hash>.json`, klucz =
 treść pliku + opcje + wersje `babel-preset-expo`/`@expo/metro-config` + `EXPO_PUBLIC_*`. `--reset-cache` ze skryptów
@@ -49,28 +52,32 @@ natywnych jest ignorowane (klucz po treści); wymuszenie: `BUN_BUNDLER_HONOR_RES
 ## Użycie
 
 ```bash
-bun run start                 # = expo start z serwerem Buna: QR, Expo Go / development build, klawisze s/a/i/w/r/j/m/o/?, web SSR + trasy API
-bun run web                   # to samo + otwiera przeglądarkę
-bun run export                # expo export na Bunie: platformy z configu Expo (iOS + Android + web) -> dist/
-bun run export --platform ios --platform android --dump-assetmap --source-maps   # = expo export (te same flagi, pomoc: --help)
-bun run export:web            # tylko web (wg web.output: single / static / server)
-bun run ios | bun run android # build Debug bez uruchamiania Metro (--no-bundler)
-RN_BUNDLER=metro …             # ta sama komenda przez Metro (@expo/cli)
+RN_BUNDLER=bun bun expo start     # serwer Buna: QR, Expo Go / development build, klawisze s/a/i/w/r/j/m/o/?, web SSR + trasy API
+RN_BUNDLER=bun bun expo start --web
+RN_BUNDLER=bun bun expo export    # platformy z configu Expo (iOS + Android + web) -> dist/; te same flagi co expo export
+RN_BUNDLER=bun bun expo export --platform web
+RN_BUNDLER=bun bun expo run:ios   # dev server Buna; z --configuration Release prebundle i faza Xcode przez Buna
+bun expo start                    # bez RN_BUNDLER: Metro na runtime Buna (domyślny silnik)
+bunx bun-react-native compare dist-metro dist-bun   # porównanie eksportów Metro vs bundler Buna
 ```
+`RN_BUNDLER=bun` musi być ustawione także dla buildów natywnych uruchamianych poza `bun expo run:*` (Xcode, Gradle
+czytają je ze środowiska procesu budującego). `tools/bun-bundler/cli.ts` (`bun …/cli.ts start|export|export:embed`)
+robi to samo co preload i zostaje dla uruchomień bez `bunfig.toml`.
 
-Z `RN_BUNDLER=metro` build natywny (`cli.ts export:embed`) pomija `--reset-cache` z Xcode/Gradle, tak jak Expo robi to
-w CI (`exportEmbedAsync.js:202-207`), więc ciepły bundle release trwa ~1,9 s zamiast ~8 s. Klucze cache Metro obejmują
-treść plików, config transformera i Babel, a `metro.config.js` dopisuje do `cacheVersion` hash zmiennych
+`export:embed` na Metro (domyślnie) pomija `--reset-cache` z Xcode/Gradle, tak jak Expo robi to w CI
+(`exportEmbedAsync.js:202-207`), więc ciepły bundle release trwa ~1,5 s zamiast ~8 s. Klucze cache Metro obejmują
+treść plików, config transformera i Babel, a `metro-on-bun.ts` dopisuje do `cacheVersion` hash zmiennych
 `EXPO_PUBLIC_*` i `BABEL_ENV` (w produkcji wstawianych przy transformacji; Expo ich w kluczu nie ma). Wynik ciepły jest
 bajt w bajt równy zimnemu, a zmiana zmiennej unieważnia cache. `RN_BUNDLER_RESET_CACHE=1` przywraca reset.
 
-- **EAS Update** (wymaga skonfigurowanego `expo-updates`, `bunx eas-cli update:configure`): `bun run export --platform ios
-  --platform android`, potem `bunx eas-cli update --skip-bundler --channel <kanał> --message "<opis>"` — `eas update`
+- **EAS Update** (wymaga skonfigurowanego `expo-updates`, `bunx eas-cli update:configure`): `bun expo export --platform ios
+  --platform android` (z `RN_BUNDLER=bun` albo bez), potem `bunx eas-cli update --skip-bundler --channel <kanał> --message "<opis>"` — `eas update`
   publikuje gotowy `dist/` (`--input-dir`, domyślnie `dist`) zamiast uruchamiać Metro.
 - **Hosting `server`**: `dist/server` obsługuje `expo-server` (np. adapter Bun: `createRequestHandler({ build: 'dist/server' })`
   z `expo-server/adapter/bun`), `dist/client` to pliki statyczne; EAS Hosting przyjmuje ten sam układ.
-- **Release iOS/Android**: bez zmian w komendach — config plugin kieruje fazę bundlowania Xcode i zadanie Gradle
-  `createBundle*JsAndAssets` do `cli.ts` (po `prebuild`: `grep CLI_PATH ios/.xcode.env`, `grep cliFile android/app/build.gradle`).
+- **Release iOS/Android**: bez zmian w natywnych plikach — faza bundlowania Xcode i zadanie Gradle
+  `createBundle*JsAndAssets` uruchamiają `@expo/cli export:embed` z katalogu aplikacji, więc preload z `bunfig.toml`
+  wybiera silnik (Metro na Bunie albo `RN_BUNDLER=bun`).
 - Dev SSR bez hydratacji, jak w Expo; `EXPO_WEB_DEV_HYDRATE=1` włącza hydratację w dev.
 
 ## Pomiary (M1 Pro)

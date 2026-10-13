@@ -67,7 +67,14 @@ export async function createMetroTransformer(opts: {
   const Transformer = mreq('metro/private/DeltaBundler/Transformer').default;
   const { getContextModuleTemplate } = mreq('metro/private/lib/contextModuleTemplates');
   const isAssetFile = mreq('metro-resolver/private/utils/isAssetFile').default;
-  const { materializeMap } = req('@expo/metro-config/build/serializer/packedMap');
+  // SDK 57 packs transform maps (serializer/packedMap); SDK 58 removed that and keeps plain mapping arrays
+  const materializeMap: (map: any) => any = (() => {
+    try {
+      return req('@expo/metro-config/build/serializer/packedMap').materializeMap;
+    } catch {
+      return (map: any) => map;
+    }
+  })();
 
   const sha1 = (b: Buffer) => crypto.createHash('sha1').update(b).digest('hex');
   const transformer = new Transformer(config, {

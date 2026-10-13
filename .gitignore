@@ -9,6 +9,9 @@ dist/
 web-build/
 expo-env.d.ts
 
+# bun pm pack
+*.tgz
+
 # Native
 .kotlin/
 *.orig.*
@@ -36,11 +39,10 @@ yarn-error.*
 # typescript
 *.tsbuildinfo
 
-example
 
 # generated native folders
-/ios
-/android
+/example/ios
+/example/android
 
 # test coverage
 coverage/

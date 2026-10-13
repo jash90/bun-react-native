@@ -10,9 +10,10 @@ type Mode = 'development' | 'production';
 function nodeEnv(projectRoot: string) {
   return expoHelpers(projectRoot).req('@expo/cli/build/src/utils/nodeEnv') as {
     setNodeEnv(mode: Mode): void;
-    loadEnvFiles(projectRoot: string, options?: { silent?: boolean }): void;
-    reloadEnvFiles(projectRoot: string): void;
-    getEnvFiles(projectRoot: string): string[];
+    // SDK 58 takes the mode explicitly; SDK 57 reads NODE_ENV and ignores the extra argument
+    loadEnvFiles(projectRoot: string, options?: { silent?: boolean; mode?: Mode }): void;
+    reloadEnvFiles(projectRoot: string, mode?: Mode): void;
+    getEnvFiles(projectRoot: string, mode?: Mode): string[];
   };
 }
 
@@ -24,15 +25,18 @@ export function loadProjectEnv(projectRoot: string, mode: Mode, opts: { force?: 
   const env = nodeEnv(projectRoot);
   if (opts.force) process.env.NODE_ENV = mode;
   env.setNodeEnv(mode);
-  env.loadEnvFiles(projectRoot);
+  env.loadEnvFiles(projectRoot, { mode });
 }
+
+/** the mode setNodeEnv left in NODE_ENV */
+const currentMode = (): Mode => (process.env.NODE_ENV === 'production' ? 'production' : 'development');
 
 /** Absolute paths of the env files Expo reads for the current NODE_ENV (watched by the dev server). */
 export function projectEnvFiles(projectRoot: string): string[] {
-  return nodeEnv(projectRoot).getEnvFiles(projectRoot);
+  return nodeEnv(projectRoot).getEnvFiles(projectRoot, currentMode());
 }
 
 /** Dev server: re-read the files after one changed (Expo's watchEnvironmentVariables -> reloadEnvFiles). */
 export function reloadProjectEnv(projectRoot: string) {
-  nodeEnv(projectRoot).reloadEnvFiles(projectRoot);
+  nodeEnv(projectRoot).reloadEnvFiles(projectRoot, currentMode());
 }

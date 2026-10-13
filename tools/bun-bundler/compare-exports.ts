@@ -1,5 +1,5 @@
-// Compare an `expo export` (Metro) output directory with a `bun run export` (Bun bundler) one:
-//   bun tools/bun-bundler/compare-exports.ts <metro-dir> <bun-dir>
+// Compare an `expo export` (Metro) output directory with a Bun bundler one:
+//   bunx bun-react-native compare <metro-dir> <bun-dir>   (RN_BUNDLER=bun expo export vs expo export)
 // Both must have the same file set and identical files. The JS bundles themselves differ by design (another
 // bundler), so `entry-<hash>` names are normalized and bundle files are only checked for existence; HTML,
 // metadata.json and server manifests are compared with those names normalized. Exit code 1 on any difference.
@@ -9,7 +9,7 @@ import path from 'node:path';
 
 const [metroDir, bunDir] = process.argv.slice(2);
 if (!metroDir || !bunDir) {
-  console.error('usage: bun tools/bun-bundler/compare-exports.ts <metro-dir> <bun-dir>');
+  console.error('usage: bun-react-native compare <metro-dir> <bun-dir>');
   process.exit(2);
 }
 
@@ -39,7 +39,15 @@ for (const f of [...metroFiles.keys()].sort()) {
   const a = fs.readFileSync(path.join(metroDir, metroFiles.get(f)!));
   const b = fs.readFileSync(path.join(bunDir, bunFile));
   const textual = /\.(html|json)$/.test(f);
-  const same = textual ? a.toString().replace(HASHED, '$1-X') === b.toString().replace(HASHED, '$1-X') : a.equals(b);
+  const norm = (buf: Buffer) => {
+    const text = buf.toString().replace(HASHED, '$1-X');
+    // Expo bundles the platforms in parallel and writes metadata.json's fileMetadata in completion order
+    if (f !== 'metadata.json') return text;
+    const meta = JSON.parse(text);
+    meta.fileMetadata = Object.fromEntries(Object.entries(meta.fileMetadata ?? {}).sort(([x], [y]) => x.localeCompare(y)));
+    return JSON.stringify(meta);
+  };
+  const same = textual ? norm(a) === norm(b) : a.equals(b);
   if (!same) (differences++, console.log(`  differs: ${f}`));
 }
 for (const f of [...bunFiles.keys()].sort()) if (!metroFiles.has(f)) (differences++, console.log(`  only in Bun:   ${f}`));
