@@ -7,7 +7,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [control, cold-cache-each-run, cache-disabled, warm-cache-from-other-cmd]
+        variant: [control, fresh-home-each-run]
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -25,18 +25,17 @@ jobs:
         run: |
           set +e
           V=${{ matrix.variant }}
-          case $V in
-            cache-disabled) export BUN_RUNTIME_TRANSPILER_CACHE_PATH=0;;
-            warm-cache-from-other-cmd) bun -e "require('$PWD/../node_modules/metro/src/DeltaBundler/WorkerFarm.js'); console.log('warmed')";;
-          esac
+          touch /tmp/marker
           git -C .. status --porcelain --ignored -- example | grep -v node_modules > /tmp/before.txt
           echo "shell node: $(command -v node) $(node -p 'process.versions.bun || process.version')"
           for i in 1 2 3; do
             rm -rf web-bun .expo/cache; T=$PWD/tmp-bun-$i; mkdir -p $T
-            [ $V = cold-cache-each-run ] && export BUN_RUNTIME_TRANSPILER_CACHE_PATH=$RUNNER_TEMP/tc-$i
+            [ $V = fresh-home-each-run ] && export HOME=$RUNNER_TEMP/home-$i && mkdir -p $HOME
             METRO_BUN_MINIFIER=0 TMPDIR=$T bun expo export --platform web --output-dir web-bun > /tmp/w$i.log 2>&1; r=$?
             echo "$V run $i: exit=$r"
             [ $r != 0 ] && grep -m2 -E 'Cannot find|Unexpected' /tmp/w$i.log
-            git -C .. status --porcelain --ignored -- example | grep -v node_modules > /tmp/after.txt; echo "new after run $i:"; diff /tmp/before.txt /tmp/after.txt | grep '^>'; cp /tmp/after.txt /tmp/before.txt
+            echo "changed since previous run (outside example/tmp*, web*):"
+            find .. "$HOME" /tmp -newer /tmp/marker -type f 2>/dev/null | grep -vE '/example/(tmp-bun|web-bun)|/tmp/(w[0-9]|marker)|/\.git/|/_temp/' | sed 's#/home/runner/work/bun-react-native/bun-react-native#REPO#' | head -40
+            touch /tmp/marker
           done
           exit 0
