@@ -7,7 +7,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [system-node, shim-on-path, setup-node, setup-node-shim-on-path]
+        variant: [control, pre-expo-env, no-ts-setup, android-first]
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -25,12 +25,18 @@ jobs:
         run: |
           set +e
           V=${{ matrix.variant }}
-          case $V in *shim-on-path) chmod +x ../tools/bin/node; export PATH="$GITHUB_WORKSPACE/tools/bin:$PATH";; esac
+          case $V in
+            pre-expo-env) printf '/// <reference types="expo/types" />\n' > expo-env.d.ts;;
+            no-ts-setup) export EXPO_NO_TYPESCRIPT_SETUP=1;;
+            android-first) bun expo export --platform android --output-dir dist-a > /tmp/a.log 2>&1; echo "android first: $?";;
+          esac
+          git -C .. status --porcelain --ignored -- example | grep -v node_modules > /tmp/before.txt
           echo "shell node: $(command -v node) $(node -p 'process.versions.bun || process.version')"
           for i in 1 2; do
             rm -rf web-bun .expo/cache; T=$PWD/tmp-bun-$i; mkdir -p $T
             METRO_BUN_MINIFIER=0 TMPDIR=$T bun expo export --platform web --output-dir web-bun > /tmp/w$i.log 2>&1; r=$?
             echo "$V run $i: exit=$r"
-            [ $r != 0 ] && head -40 /tmp/w$i.log
+            [ $r != 0 ] && grep -m2 -E 'Cannot find|Unexpected' /tmp/w$i.log
+            git -C .. status --porcelain --ignored -- example | grep -v node_modules > /tmp/after.txt; echo "new after run $i:"; diff /tmp/before.txt /tmp/after.txt | grep '^>'; cp /tmp/after.txt /tmp/before.txt
           done
           exit 0
