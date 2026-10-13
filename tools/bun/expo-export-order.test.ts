@@ -39,6 +39,38 @@ test('platform bundles run one after another in call order', async () => {
   expect(log).toEqual(['start ios', 'end ios', 'start android', 'end android', 'start web', 'end web']);
 });
 
+test('DOM component bundles share the queue with the platform bundles', async () => {
+  const log: string[] = [];
+  class DevServer {
+    async nativeExportBundleAsync(_exp: unknown, { platform }: { platform: string }) {
+      log.push(`start ${platform}`);
+      await sleep(platform === 'ios' ? 20 : 5);
+      log.push(`end ${platform}`);
+    }
+    async legacySinglePageExportBundleAsync({ dom }: { dom: string }) {
+      log.push(`start ${dom}`);
+      await sleep(dom === 'dom-a' ? 20 : 5);
+      log.push(`end ${dom}`);
+    }
+    getStaticResourcesAsync() {}
+    getStaticRenderFunctionAsync() {}
+  }
+  applyExportOrder(DevServer.prototype);
+  const dev = new DevServer();
+  // like exportApp: each platform bundles, then exports its DOM components with Promise.all
+  await Promise.all(
+    ['ios', 'android'].map(async (platform) => {
+      await dev.nativeExportBundleAsync({}, { platform });
+      await Promise.all(['dom-a', 'dom-b'].map((dom) => dev.legacySinglePageExportBundleAsync({ dom: `${dom}` })));
+    }),
+  );
+  expect(log).toEqual([
+    'start ios', 'end ios', 'start android', 'end android',
+    'start dom-a', 'end dom-a', 'start dom-b', 'end dom-b',
+    'start dom-a', 'end dom-a', 'start dom-b', 'end dom-b',
+  ]);
+});
+
 test('a failing platform bundle does not stop the next one', async () => {
   const log: string[] = [];
   class DevServer {

@@ -1,0 +1,26 @@
+# TEMPORARY (PR #1): cost of the fixed bundling order in `expo export` (BUN_RN_EXPORT_ORDER) on a stable runner
+name: bench-export
+on: pull_request
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.3
+      - run: bun install --frozen-lockfile
+      - name: parallel vs ordered, alternating, cold and warm
+        working-directory: example
+        env:
+          EXPO_NO_TELEMETRY: 1
+        run: |
+          now() { date +%s.%N; }
+          for mode in parallel ordered parallel ordered parallel ordered; do
+            if [ $mode = parallel ]; then E=0; else E=1; fi
+            T=$RUNNER_TEMP/t-$mode-$RANDOM; mkdir -p "$T"
+            s=$(now); BUN_RN_EXPORT_ORDER=$E TMPDIR=$T bun expo export --output-dir x > /dev/null 2>&1; c=$(echo "$(now) - $s" | bc)
+            s=$(now); BUN_RN_EXPORT_ORDER=$E TMPDIR=$T bun expo export --output-dir x > /dev/null 2>&1; w=$(echo "$(now) - $s" | bc)
+            echo "RESULT $mode cold ${c}s warm ${w}s"
+            rm -rf x "$T"
+          done
