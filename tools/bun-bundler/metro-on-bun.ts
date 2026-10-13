@@ -2,9 +2,12 @@
 // Expo CLI processes (./cli.ts, tools/bun/expo-cli.preload.js) before Metro starts, through Expo CLI's
 // withMetroMultiPlatformAsync, which composes every Metro config Expo CLI uses (start, export, export:embed,
 // expo-updates' createUpdatesResources):
-//   - transforms on Bun worker threads that load the Node-compat shims (../bun/metro-worker-farm.js): Expo's default
-//     worker_threads would run without them (bunfig preload does not reach threads; KNOWN-ISSUES #4/#5) and pick
-//     other asset scales, so bundles would differ from Node's - METRO_BUN_WORKERS=0 keeps Metro's workers
+//   - transforms in worker processes (jest-worker, `transformer.unstable_workerThreads = false`): each is a Bun process
+//     started in the app directory, so it loads the bunfig preload with the Node-compat shims. Expo's default
+//     worker_threads would run without them (bunfig preload does not reach threads; KNOWN-ISSUES #4/#5) and pick other
+//     asset scales. METRO_BUN_WORKERS=threads uses Bun worker threads that load the shims themselves
+//     (../bun/metro-worker-farm.js) - same output and speed, but Bun's resolver failed under concurrent resolution
+//     from the main thread and the threads on linux x64 (KNOWN-ISSUES #22)
 //   - EXPO_PUBLIC_* / BABEL_ENV in `cacheVersion` (cache keys only): ./cli.ts keeps Metro's cache across
 //     --reset-cache of native builds, and release transforms inline those values
 //   - React Server Components in development: polyfill for an Expo SDK 57 bug (../bun/rsc-dev-polyfill.js,
@@ -31,7 +34,8 @@ export function envCacheKey(env: NodeJS.ProcessEnv = process.env) {
 
 export function installMetroOnBun(projectRoot: string) {
   if (!process.versions.bun) return;
-  if (process.env.METRO_BUN_WORKERS !== '0') require('../bun/metro-worker-farm').install(projectRoot);
+  const threads = process.env.METRO_BUN_WORKERS === 'threads';
+  if (threads) require('../bun/metro-worker-farm').install(projectRoot);
   const req = createRequire(path.join(projectRoot, 'package.json'));
   const original = req('@expo/cli/build/src/start/server/metro/withMetroMultiPlatform').withMetroMultiPlatformAsync;
   if (!original || original.__bunMetro) return;
@@ -43,7 +47,7 @@ export function installMetroOnBun(projectRoot: string) {
       config.transformer.minifierPath = BUN_MINIFIER;
     }
     // Metro's own worker threads would run without the shims: worker processes (they load the bunfig preload)
-    if (process.env.METRO_BUN_WORKERS === '0' && config.transformer) config.transformer.unstable_workerThreads = false;
+    if (!threads && config.transformer) config.transformer.unstable_workerThreads = false;
     // Expo instantiateMetro: server functions (reactServerFunctions / EXPO_UNSTABLE_SERVER_FUNCTIONS) or RSC routes
     const exp = options.exp?.experiments ?? {};
     const rsc = !!(exp.reactServerFunctions ?? process.env.EXPO_UNSTABLE_SERVER_FUNCTIONS) || !!exp.reactServerComponentRoutes;

@@ -61,4 +61,11 @@ npm po v1 (do tego czasu `github:jash90/bun-react-native`); zgłoszenie błędó
    inny podział na chunki i `_expo/.routes.json` → przy `RN_BUNDLER=bun` SDK 58 zostaje na Metro (komunikat z
    powodem). Typecheck i Jest przykładu na SDK 58 padają tak samo na Node (kod aplikacji pod API SDK 57).
 4. CI: job `sdk-next` (`expo@next`, `continue-on-error`) — `doctor`, `export:embed` Android Node vs Bun, `expo export`.
+5. Drugi przebieg CI: po usunięciu konstruktora `WorkerFarm` web na linux x64 padał dalej, teraz z rozwiązaniem
+   `metro/private/lib/countLines` z globalnego cache Buna (auto-install) — resolver Buna przy równoległym użyciu z
+   wątków. Domyślnie transformacje Metro idą teraz w procesach jest-worker (każdy ładuje preload z `bunfig.toml`);
+   wątki Buna tylko z `METRO_BUN_WORKERS=threads`. Lokalnie: embed Android = Node, web (terser) = Node, dev identyczny
+   dla 3 silników, `RN_BUNDLER=bun` export = Metro (0 różnic), czas embed bez zmian. Docker na tym Macu przestał
+   uruchamiać kontenery, więc linux x64 sprawdza CI. Job `sdk-next`: `bunfig.toml` przykładu usuwany przed instalacją
+   (preload musi się rozwiązać, #20), potem `init`.
 

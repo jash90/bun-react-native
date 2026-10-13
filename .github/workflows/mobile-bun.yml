@@ -204,13 +204,15 @@ jobs:
       - name: Example copy on expo@next with the packed package
         run: |
           bun pm pack --destination "$RUNNER_TEMP"
-          APP="$RUNNER_TEMP/next" && mkdir -p "$APP" && cp -R example/. "$APP" && rm -rf "$APP/node_modules"
+          # no bunfig.toml until the package is installed: its preload must resolve (KNOWN-ISSUES #20)
+          APP="$RUNNER_TEMP/next" && mkdir -p "$APP" && cp -R example/. "$APP" && rm -rf "$APP/node_modules" "$APP/bunfig.toml"
           cd "$APP"
           bun -e 'const fs=require("fs");const p=JSON.parse(fs.readFileSync("package.json"));delete p.scripts.postinstall;p.dependencies.expo="next";fs.writeFileSync("package.json",JSON.stringify(p,null,2))'
           bun install
           bun x expo install --fix
           RN="$(bun -p 'require("react-native/package.json").version')"
           bun add -d "@react-native/metro-config@$RN" "@react-native/jest-preset@$RN" "$RUNNER_TEMP"/bun-react-native-*.tgz
+          bunx bun-react-native init
           echo "APP=$APP" >> "$GITHUB_ENV"
       - run: bunx bun-react-native doctor
         working-directory: ${{ env.APP }}

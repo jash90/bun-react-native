@@ -198,4 +198,5 @@ Skrypt całości: gałąź `poc/bun-toolchain`, `poc-tools/e2e-100.sh` (opis w V
 
 `bun remove bun-react-native`, usuń `bun-react-native/preload` z `bunfig.toml` i `"bun-react-native"` z pluginów
 `app.json` → toolchain wraca na Node (shebangi), `bun.lock` może zostać (Bun jako PM). Pojedyncze polecenie z Metro
-bez dodatków paczki: `BUN_RN_PATH=0`, `METRO_BUN_WORKERS=0`, `METRO_BUN_MINIFIER=0`.
+bez dodatków paczki: `BUN_RN_PATH=0`, `METRO_BUN_MINIFIER=0`; transformacje w wątkach Buna zamiast procesów:
+`METRO_BUN_WORKERS=threads`.

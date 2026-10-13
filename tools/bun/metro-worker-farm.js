@@ -5,7 +5,8 @@
 // itself, then runs Metro's own Worker.js - transforms, cache keys and results are Metro's.
 //
 // Installed by tools/bun-bundler/metro-on-bun.ts: Transformer.js reads `require('./WorkerFarm').default` when Metro creates the
-// bundler, so replacing that export before then is enough. METRO_BUN_WORKERS=0 keeps jest-worker.
+// bundler, so replacing that export before then is enough. Opt-in: METRO_BUN_WORKERS=threads (the default is Metro's
+// jest-worker processes, which load the bunfig preload - tools/bun-bundler/metro-on-bun.ts).
 'use strict';
 const path = require('node:path');
 const { Worker } = require('node:worker_threads');
