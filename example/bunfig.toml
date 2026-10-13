@@ -7,5 +7,9 @@ preload = ["bun-react-native/preload"]
 env = false
 
 [install]
+# No auto-install at runtime: tools that probe global packages (Expo's sharp-cli lookup via require.resolve with global
+# `paths`) would make Bun install them on the fly, which breaks later module resolution in that process
+# (KNOWN-ISSUES #22). Node never installs on resolution either.
+auto = "disable"
 # The isolated linker duplicates Expo native modules (oven-sh/bun#29343).
 linker = "hoisted"

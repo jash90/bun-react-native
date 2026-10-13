@@ -14,6 +14,10 @@ env = false
 root = "./tools"
 
 [install]
+# No auto-install at runtime: tools that probe global packages (Expo's sharp-cli lookup via require.resolve with global
+# `paths`) would make Bun install them on the fly, which breaks later module resolution in that process
+# (KNOWN-ISSUES #22). Node never installs on resolution either.
+auto = "disable"
 # Pin the public npm registry so bun.lock does not record a registry mirror from a personal ~/.npmrc.
 registry = "https://registry.npmjs.org/"
 # The isolated linker duplicates Expo native modules (oven-sh/bun#29343).

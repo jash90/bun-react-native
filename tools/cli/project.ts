@@ -73,8 +73,11 @@ export function bunfigWithPreload(current: string): string {
     const line = '# No automatic .env loading (like Node): Expo CLI loads .env.<mode> for each command itself.\nenv = false\n';
     text = firstTable < 0 ? `${text.trimEnd()}\n${line}` : `${top.trimEnd()}\n${line}\n${text.slice(firstTable)}`;
   }
+  const AUTO = '# No runtime auto-install (it breaks module resolution after Expo probes global packages).\nauto = "disable"\n';
   if (!/^\[install\]/m.test(text)) {
-    text = `${text.trimEnd()}\n\n[install]\n# The isolated linker duplicates Expo native modules (oven-sh/bun#29343).\nlinker = "hoisted"\n`;
+    text = `${text.trimEnd()}\n\n[install]\n# The isolated linker duplicates Expo native modules (oven-sh/bun#29343).\nlinker = "hoisted"\n${AUTO}`;
+  } else if (!/^\s*auto\s*=/m.test(text.slice(text.search(/^\[install\]/m)).split(/^\[(?!install\])/m)[0])) {
+    text = text.replace(/^\[install\]\n/m, `[install]\n${AUTO}`);
   }
   return text.endsWith('\n') ? text : text + '\n';
 }

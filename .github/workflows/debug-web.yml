@@ -7,14 +7,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [control, fresh-home-each-run]
+        variant: [control, fresh-home-each-run, setup-node]
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.3
       - uses: actions/setup-node@v4
-        if: startsWith(matrix.variant, 'setup-node')
+        if: matrix.variant == 'setup-node'
         with:
           node-version: 22
       - run: bun install --frozen-lockfile

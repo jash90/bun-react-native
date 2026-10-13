@@ -23,6 +23,10 @@ export function doctor(dir: string): Check[] {
   const bunfig = path.join(root, 'bunfig.toml');
   const bunfigText = fs.existsSync(bunfig) ? fs.readFileSync(bunfig, 'utf8') : '';
   add(bunfigText.includes(PRELOAD), `bunfig.toml preload "${PRELOAD}"`, bunfigText.includes(PRELOAD) ? undefined : 'run `bunx bun-react-native init`');
+  const installTable = bunfigText.split(/^\[(?=install\])/m)[1]?.split(/^\[/m)[0] ?? '';
+  if (bunfigText.includes(PRELOAD) && !/^\s*auto\s*=\s*"disable"/m.test(installTable)) {
+    add('warn', 'bunfig.toml [install] auto is not "disable"', 'Bun may auto-install packages Expo probes globally (sharp-cli) and then resolve modules wrongly (KNOWN-ISSUES #22)');
+  }
   if (/^\s*\[run\][^[]*^\s*bun\s*=\s*true/ms.test(bunfigText)) add(false, 'bunfig.toml sets [run] bun = true', "remove it: it puts Bun's buggy `node` alias in front of the shim (oven-sh/bun#40482)");
 
   if (expo) {
