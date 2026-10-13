@@ -82,3 +82,11 @@ npm po v1 (do tego czasu `github:jash90/bun-react-native`); zgłoszenie błędó
    usunięciem przyczyny: `tools/bun/expo-export-order.js` (platformy po kolei, render przed klientem). Wynik: pełny
    eksport Node×2, Bun×2 i Node vs Bun identyczne (poza `.hbc`, #16), web SDK 58 Node vs Bun bajt w bajt; CI znowu
    porównuje pełny eksport bajtowo (Node z tą samą kolejnością przez `scripts/node-export-order.cjs`).
+8. Ograniczenia z punktu 7 usunięte: (a) koszt kolejki zmierzony w CI (tymczasowy workflow `bench-export`, ubuntu,
+   3× naprzemiennie): zimny pełny eksport 63,6 s równolegle vs 65,3 s po kolei, ciepły 19,4 vs 19,4 s — w szumie
+   (lokalne +15% to był load ~300); (b) bundle komponentów DOM (`legacySinglePageExportBundleAsync`) w tej samej
+   kolejce. Przy (b) złapany błąd: `nativeExportBundleAsync` sam woła `legacySinglePageExportBundleAsync`, więc
+   kolejka zakleszczała każdy eksport (fikstura DOM zawisła) — kolejka reentrant przez `AsyncLocalStorage`, test
+   regresji (bez poprawki: zakleszczenie). Fikstura DOM: eksport iOS 2× identyczny łącznie z `www.bundle`; CI na
+   `40ba8ff` zielone.
+
