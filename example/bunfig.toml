@@ -13,3 +13,6 @@ env = false
 auto = "disable"
 # The isolated linker duplicates Expo native modules (oven-sh/bun#29343).
 linker = "hoisted"
+# This repo only (not written by init): the public npm registry, so `expo install` (`bun add` here) does not record a
+# registry mirror from a personal ~/.npmrc in bun.lock - like the root bunfig.toml.
+registry = "https://registry.npmjs.org/"
