@@ -54,8 +54,9 @@ export async function exportEmbedAsync(projectRoot: string, options: EmbedOption
   // The React Native build scripts always reset the cache; Expo skips that on CI
   if (env.CI && options.resetCache) options.resetCache = false;
   const nodeEnv = cli('utils/nodeEnv');
-  nodeEnv.setNodeEnv(options.dev ? 'development' : 'production');
-  nodeEnv.loadEnvFiles(projectRoot);
+  const mode = options.dev ? 'development' : 'production';
+  nodeEnv.setNodeEnv(mode);
+  nodeEnv.loadEnvFiles(projectRoot, { mode }); // SDK 58 takes the mode, SDK 57 reads NODE_ENV
 
   // `expo run` bundled eagerly before the native build: reuse it when the options match (Expo's key)
   const { deserializeEagerKey, getExportEmbedOptionsKey } = cli('export/embed/resolveOptions');

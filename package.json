@@ -1,76 +1,52 @@
 {
   "name": "bun-react-native",
-  "main": "expo-router/entry",
-  "version": "1.0.0",
-  "private": true,
-  "packageManager": "bun@1.4.3",
-  "scripts": {
-    "start": "bun tools/bun-bundler/cli.ts start",
-    "start:metro": "expo start",
-    "android": "expo run:android --no-bundler",
-    "ios": "expo run:ios --no-bundler",
-    "web": "bun tools/bun-bundler/cli.ts start --web",
-    "web:metro": "expo start --web",
-    "export": "bun tools/bun-bundler/cli.ts export",
-    "export:web": "bun tools/bun-bundler/cli.ts export --platform web",
-    "export:metro": "expo export",
-    "prebuild": "expo prebuild --clean",
-    "lint": "expo lint",
-    "typecheck": "tsc --noEmit",
-    "test": "jest",
-    "test:tools": "bun test",
-    "compare:export": "bun tools/bun-bundler/compare-exports.ts",
-    "reset-project": "node ./scripts/reset-project.js",
-    "eas-build-pre-install": "chmod +x tools/bin/node && set-env PATH \"$EAS_BUILD_WORKINGDIR/tools/bin:$PATH\"",
-    "eas-build-post-install": "node -e \"if (!process.versions.bun) { console.error('node is not Bun: tools/bin/node is not first on PATH'); process.exit(1) }\""
+  "version": "0.1.0",
+  "description": "Run the whole Expo / React Native toolchain on Bun: Metro on the Bun runtime (byte-identical to Node), an optional Bun bundler, a node -> Bun shim, Jest on Bun",
+  "license": "MIT",
+  "author": "Bartlomiej Zimny",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jash90/bun-react-native.git"
   },
-  "dependencies": {
-    "@expo/ui": "~57.0.22",
-    "expo": "~57.0.27",
-    "expo-constants": "~57.0.21",
-    "expo-device": "~57.0.2",
-    "expo-font": "~57.0.4",
-    "expo-glass-effect": "~57.0.4",
-    "expo-image": "~57.0.5",
-    "expo-linking": "~57.0.12",
-    "expo-router": "~57.0.25",
-    "expo-splash-screen": "~57.0.9",
-    "expo-status-bar": "~57.0.1",
-    "expo-symbols": "~57.0.3",
-    "expo-system-ui": "~57.0.4",
-    "expo-web-browser": "~57.0.3",
-    "react": "19.2.3",
-    "react-dom": "19.2.3",
-    "react-native": "0.86.3",
-    "react-native-gesture-handler": "~2.32.0",
-    "react-native-reanimated": "4.5.1",
-    "react-native-safe-area-context": "~5.7.0",
-    "react-native-screens": "~4.26.0",
-    "react-native-web": "~0.21.0",
-    "react-native-worklets": "0.10.1"
+  "homepage": "https://github.com/jash90/bun-react-native#readme",
+  "keywords": [
+    "bun",
+    "react-native",
+    "expo",
+    "metro",
+    "bundler"
+  ],
+  "packageManager": "bun@1.4.3",
+  "engines": {
+    "bun": ">=1.4.3"
+  },
+  "bin": {
+    "bun-react-native": "tools/cli/index.ts",
+    "node": "tools/bin/node"
+  },
+  "files": [
+    "app.plugin.js",
+    "preload.js",
+    "plugins/",
+    "tools/",
+    "!tools/**/*.test.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "peerDependencies": {
+    "expo": ">=57.0.0 <59.0.0"
+  },
+  "workspaces": [
+    "example"
+  ],
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "bun run --cwd example typecheck",
+    "typecheck:tools": "bun check -p tools",
+    "lint": "bun run --cwd example lint",
+    "test:example": "bun run --cwd example test"
   },
   "devDependencies": {
-    "@react-native/jest-preset": "0.86.3",
-    "@react-native/metro-config": "0.86.3",
-    "@testing-library/react-native": "^14.1.0",
-    "@types/jest": "^29.5.14",
-    "@types/react": "~19.2.2",
-    "eslint": "^9.39.0",
-    "eslint-config-expo": "~57.0.2",
-    "jest": "~29.7.0",
-    "jest-expo": "~57.0.5",
-    "test-renderer": "^1.0.0",
-    "typescript": "~6.0.3"
-  },
-  "jest": {
-    "preset": "jest-expo",
-    "setupFiles": [
-      "./tests/setup/jest.setup.js"
-    ],
-    "testPathIgnorePatterns": [
-      "/node_modules/",
-      "/docs/",
-      "/tools/"
-    ]
+    "@types/bun": "^1.4.3"
   }
 }

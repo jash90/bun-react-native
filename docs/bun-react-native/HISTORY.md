@@ -464,6 +464,10 @@ Server Function renderuje się w `expo start` (Chromium), bez — `ReferenceErro
    bajt jak Metro na Node 25.9, łącznie z debug ID Sentry. Hook musi się zainstalować przed załadowaniem modułów Expo
    CLI (trzymają referencje do eksportów) — w `cli.ts` na samym początku.
 
+## Etap 13 — paczka `bun-react-native` (2026-10-12)
+
+Osobny plik: [HISTORY-PACKAGE.md](HISTORY-PACKAGE.md) (analiza, decyzje, implementacja, weryfikacja).
+
 ---
 
 ## Jak powtórzyć weryfikację

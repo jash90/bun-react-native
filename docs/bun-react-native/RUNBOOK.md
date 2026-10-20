@@ -22,7 +22,7 @@ Dowody i liczby: [VERIFICATION.md](VERIFICATION.md). Znane bugi i kiedy usunąć
 | `bun --bun` / `[run] bun = true` wstawia alias `node` przed shim → dzieci trafiają w #40482 | Bun `run` | z shimem nie używać `--bun` | `package.json` |
 | `bun test` nie przetwarza Flow (`react-native/index.js`) ani presetów Jest | oven-sh/bun#16945 | **Jest na runtime Bun** zamiast `bun test` | — |
 
-W tym repo wszystkie pliki są już na miejscu (ścieżki w § 3).
+Wszystkie obejścia są w paczce `bun-react-native` (§ 3); w projekcie zostaje `bunfig.toml` i wpis pluginu.
 
 ## 1. Narzędzia
 
@@ -51,62 +51,59 @@ Xcode + CocoaPods (iOS), JDK 17 + Android SDK (Android) — bez zmian względem 
 6. **Monorepo / workspace'y:** zawsze `linker = "hoisted"` (patrz `bunfig.toml`). `bunfig.toml` jest czytany
    z bieżącego katalogu — w monorepo umieść kopię w katalogu każdej aplikacji (tam, skąd startują Metro/Gradle/Xcode).
 
-## 3. Pliki w projekcie
+## 3. Paczka w projekcie
 
-| Plik | Gdzie | Rola |
+```bash
+bun add -d github:jash90/bun-react-native   # npm od v1
+bunx bun-react-native init                  # bunfig.toml, config plugin, EAS; na końcu `doctor`
+bun install
+```
+
+| Co | Gdzie | Rola |
 |---|---|---|
-| `bunfig.toml` | katalog aplikacji | `preload` dla każdego procesu Buna, `env = false`; w monorepo dodaj `[install] linker = "hoisted"` |
-| `tools/bun/node-compat.preload.js` | repo | sortowanie `fs.readdir*` jak w Node |
-| `tools/bun/jest.preload.js` | repo | Jest pod Bunem zachowuje się jak pod Node |
-| `tools/bun/expo-cli.preload.js` | repo | `bun expo run:*` / `export:embed`: bundlowanie (także prebundle „eager” Release) przez Buna; `expo-updates` `createUpdatesResources.js`: assety `app.manifest` z grafu Buna |
-| `metro.config.js` | katalog aplikacji | pod Bunem `transformer.unstable_workerThreads = false` + `WorkerFarm` na wątkach Buna |
-| `tools/bun/metro-worker-farm.js`, `metro-worker-farm.worker.js` | repo | transformacje Metro w wątkach Buna (`Worker.js` Metro, błędy jak jest-worker) |
-| `tools/bin/node` (chmod +x) | repo | shim `node` → Bun |
-| `plugins/with-bun-xcode-env.js` | katalog aplikacji + `app.json` → `"plugins": ["./plugins/with-bun-xcode-env"]` | `ios/.xcode.env` → `NODE_BINARY=$(command -v bun)` (przeżywa `prebuild --clean`) |
+| `bunfig.toml` (`init`) | katalog aplikacji | `preload = ["bun-react-native/preload"]`, `env = false`, `[install] linker = "hoisted"` |
+| `preload.js` | paczka | ładuje `tools/bun/path.preload.js` (shim na początek PATH dla dzieci), `node-compat.preload.js` (readdir, `util.parseEnv`, `net` listen), `jest.preload.js`, `expo-cli.preload.js` (Metro na Bunie dla każdego procesu Expo CLI; `RN_BUNDLER=bun` → bundler Buna) |
+| `"bun-react-native"` w `app.json` → `plugins` (`init`) | katalog aplikacji | `ios/.xcode.env` → `NODE_BINARY` = Bun (przeżywa `prebuild --clean`) |
+| `tools/bin/node` | paczka (`bin` → `node_modules/.bin/node`) | shim `node` → Bun |
+| `metro.config.js` | katalog aplikacji | **bez zmian** — wątki Buna z shimami, `EXPO_PUBLIC_*` w kluczu cache, minifier Buna i polyfill RSC ustawia `tools/bun-bundler/metro-on-bun.ts` dla każdego configu, który składa Expo CLI (także obcego: Sentry, Uniwind itd.) |
 
-`bunfig.toml` (aplikacja):
+`bunfig.toml` (aplikacja, tak zapisuje go `init`):
 ```toml
-preload = ["./tools/bun/node-compat.preload.js", "./tools/bun/jest.preload.js", "./tools/bun/expo-cli.preload.js"]
+preload = ["bun-react-native/preload"]
 # .env ładują Expo CLI i bundler dla trybu polecenia; Bun wziąłby .env.development także do release (KNOWN-ISSUES #12)
 env = false
 
 [install]
 linker = "hoisted"
 ```
+Preload musi się rozwiązać: przed pierwszym `bun install` każdy proces Buna w katalogu aplikacji kończy się błędem
+`preload not found` (KNOWN-ISSUES #20) — najpierw `bun install`.
 
-Jeżeli masz już `metro.config.js`, dopisz tylko:
-```js
-if (process.versions.bun) {
-  config.transformer.unstable_workerThreads = false;
-}
-```
-Resztę (wątki Buna z shimami, `EXPO_PUBLIC_*` w kluczu cache, polyfill RSC w dev) robi preload
-`tools/bun/expo-cli.preload.js` przez `tools/bun-bundler/metro-on-bun.ts` dla każdego procesu Expo CLI — także gdy
-`metro.config.js` jest obcy (Sentry, Uniwind itd.); bez tej linii też jest poprawnie, bo `WorkerFarm` jest podmieniany.
-Nie podmieniaj `transformerPath` — Expo CLI owija niestandardowy transformer „supervising workerem”, co pod Bunem
-psuje `expo export --platform web` (`this._transformer.transformFile` undefined; sprawdzone w PoC).
+Linie z poprzedniej wersji (kopiowanie plików do repo) są zbędne: `transformer.unstable_workerThreads = false` i
+`minifierPath` w `metro.config.js`, `./plugins/with-bun-*` w `app.json`, ścieżki `./tools/bun/*.preload.js` w
+`bunfig.toml` (`doctor` je wskazuje). Nie podmieniaj `transformerPath` — Expo CLI owija niestandardowy transformer
+„supervising workerem”, co pod Bunem psuje `expo export --platform web` (sprawdzone w PoC).
 
 ## 4. Shim `node` na PATH
 
-```bash
-export PATH="$PWD/tools/bin:$PATH"   # w ~/.zshrc użyj ścieżki absolutnej do repo
-command -v node                      # → .../tools/bin/node
-node -p "process.versions.bun"       # → 1.4.3 (na prawdziwym Node: undefined)
-```
-- Terminal, CI: wystarczy PATH.
-- **Xcode (GUI):** fazy skryptowe nie wołają `node`, tylko `$NODE_BINARY` z `ios/.xcode.env(.local)`.
-  `pod install` z shimem generuje `ios/.xcode.env.local` z `NODE_BINARY=<ścieżka do bun>` (expo-modules-autolinking
-  `xcode_env_generator.rb`). Na stałe (commitowane): w `ios/.xcode.env` ustaw `export NODE_BINARY=$(command -v bun)`
-  — przy CNG użyj config pluginu [`plugins/with-bun-xcode-env.js`](../../plugins/with-bun-xcode-env.js)
-  (sprawdzony: po `prebuild --clean` + `pod install` Xcode dostaje `NODE_BINARY=<bun>`).
-- **Android Studio (GUI):** Gradle sync wykonuje `node` → shim musi być na PATH procesu Android Studio.
-  *Hipoteza do weryfikacji:* IntelliJ/Android Studio na macOS ładuje środowisko powłoki logowania, więc wpis w
-  `~/.zshrc` wystarcza; w razie problemów uruchamiaj `open -a "Android Studio"` z terminala z ustawionym PATH.
+- **Procesy uruchomione Bunem z katalogu aplikacji** (`bun expo …`, `bun run …`, Jest, kroki bundlowania Xcode/Gradle):
+  preload wstawia `node_modules/bun-react-native/tools/bin` na początek `PATH` dzieci — Gradle, `pod install`,
+  autolinking wołają shim, także gdy Node nie jest zainstalowany i `bun run` wstawił swój alias `node`
+  (oven-sh/bun#40482). Ręczny PATH nie jest potrzebny. `BUN_RN_PATH=0` wyłącza.
+- **Skrypty `package.json` wołające `node` wprost** (np. `node ./scripts/x.js`): przy zainstalowanym Node `bun run`
+  stawia `node_modules/.bin` (z `node` z paczki) przed Node; bez Node — alias Buna (działa poza `--eval`).
+- **Xcode (GUI):** fazy skryptowe używają `$NODE_BINARY` z `ios/.xcode.env` — config plugin ustawia Buna
+  (`command -v bun`, a gdy Xcode z Docka nie ma PATH — ścieżka Buna, który wykonał prebuild).
+  `pod install` generuje też `ios/.xcode.env.local` z `NODE_BINARY` = Bun.
+- **Android Studio (GUI) / Gradle bez Buna:** Gradle woła `node` z PATH procesu (`settings.gradle`,
+  `app/build.gradle`, pluginy autolinkingu) — buduj przez `bun expo run:android` albo dodaj
+  `node_modules/bun-react-native/tools/bin` do PATH. `bunx bun-react-native doctor` pokazuje, co widzą procesy.
 - Nie twórz symlinku `ln -s $(which bun) node` — to dokładnie przypadek oven-sh/bun#40482.
 
 ## 5. Skrypty (`package.json`) — BEZ `--bun`
 
-Z shimem na PATH każde `#!/usr/bin/env node` trafia do shima, czyli do Buna. Flaga `--bun` jest zbędna
+Każde `#!/usr/bin/env node` uruchomione przez `bun run`/`bun expo` trafia do Buna (shim z `node_modules/.bin`,
+a w dzieciach — shim z preloadu). Flaga `--bun` jest zbędna
 **i szkodliwa**: `bun --bun run …`, `bun --bun <bin>` oraz `[run] bun = true` w `bunfig.toml` wstawiają na początek
 PATH symlink `/tmp/bun-node-<rev>/node` (alias Buna z bugiem oven-sh/bun#40482) — **także gdy shim jest na PATH**.
 Procesy potomne (Gradle, `pod install` uruchamiane przez `expo run:*`) dostają wtedy alias i autolinking pada.
@@ -115,20 +112,20 @@ zamiast `["a","b","c"]`; dziecko `bun <bin>` widzi shim i poprawny argv.
 
 ```jsonc
 "scripts": {
-  "start": "expo start",
+  "start": "expo start",                    // Metro na Bunie; RN_BUNDLER=bun expo start → bundler Buna
   "ios": "expo run:ios",
   "android": "expo run:android",
+  "export": "expo export",
   "prebuild": "expo prebuild --clean",
   "lint": "expo lint",
-  "typecheck": "tsc --noEmit",
-  "test": "jest"
+  "typecheck": "bun check",                 // type checker Buna, te same błędy co tsc --noEmit (~17× szybciej)
+  "test": "jest"                            // Jest na runtime Buna (bun test: oven-sh/bun#16945)
 }
 ```
+Skrypty zostają takie jak w szablonie Expo — silnik wybiera preload.
 Uruchamiaj przez `bun run <script>` / `bun <bin>` (np. `bun expo start`). Kontrola, że Metro działa na Bunie:
 `ps -o command= -p $(lsof -ti :8081)` → `…/bun --no-env-file …/node_modules/.bin/expo start`.
 
-- Bez shima na PATH `bun run` uruchomi prawdziwy Node (shebang) — wtedy, jeśli chcesz Buna dla pojedynczego narzędzia
-  bez dzieci wołających `node --eval`, `bun --bun <bin>` jest OK (tak mierzono `tsc`/ESLint/Jest w PoC).
 - Jest: coverage tylko `coverageProvider: "babel"` (domyślny). `v8` pod Bunem zwraca
   `Inspector error -32000: Precise coverage has not been started`.
 - Zmienne `NODE_OPTIONS` (np. `--max-old-space-size`, `--require`) **nie działają** pod Bunem — przenieś
@@ -176,6 +173,7 @@ bezpośrednio. Lista miejsc: [VERIFICATION.md § Wywołania node](VERIFICATION.m
 
 Workflow: [`.github/workflows/mobile-bun.yml`](../../.github/workflows/mobile-bun.yml)
 (`oven-sh/setup-bun@v2` + shim na `$GITHUB_PATH` + krok `assert-no-node` + job porównujący bundle Node vs Bun).
+Wersja Buna pochodzi z pola `packageManager` w `package.json` (`bun-version-file: package.json`), zmienna `BUN_VERSION` została usunięta.
 
 ## 8. EAS Build
 
@@ -184,7 +182,8 @@ Workflow: [`.github/workflows/mobile-bun.yml`](../../.github/workflows/mobile-bu
   { "build": { "production": { "bun": "1.4.3" } } }
   ```
 - Obrazy EAS (SDK 57) zawierają Node 22 i Bun 1.3.14 — natywne kroki EAS wołają `node` z obrazu.
-  „100% Bun” na EAS wymaga shima na PATH na workerze — patrz [CI-EAS.md](CI-EAS.md) (opcje i ich status weryfikacji).
+  „100% Bun” na EAS wymaga shima na PATH na workerze: `init` dodaje `"eas-build-post-install": "bun-react-native
+  eas-build-post-install"` (`set-env PATH` z katalogiem shima) — niezweryfikowane na EAS, patrz [CI-EAS.md](CI-EAS.md).
 
 ## 9. Weryfikacja po wdrożeniu (obowiązkowa)
 
@@ -194,9 +193,11 @@ Workflow: [`.github/workflows/mobile-bun.yml`](../../.github/workflows/mobile-bu
 3. **Urządzenia** — Debug: Fast Refresh z zachowaniem stanu, debugger, symbolikacja; Release: start bez Metro.
 4. Jest: ten sam wynik i snapshoty na `bun run test` (Node) i `bun --bun jest` (Bun).
 
-Skrypt całości: gałąź `poc/bun-toolchain`, `poc-tools/e2e-100.sh` (opis w VERIFICATION.md); w CI: joby `checks`, `android`, `ios`, `bundle-determinism`.
+Skrypt całości: gałąź `poc/bun-toolchain`, `poc-tools/e2e-100.sh` (opis w VERIFICATION.md); w CI: joby `checks`, `consumer` (paczka z tarballa + `init` w projekcie spoza repo), `android`, `ios`, `bundle-determinism`.
 
 ## 10. Wycofanie
 
-Usuń `tools/bin` z PATH i `--bun` ze skryptów → toolchain wraca na Node; `bun.lock` może zostać (Bun jako PM).
-Preloady i `metro.config.js` są no-op pod Node (`if (process.versions.bun)`).
+`bun remove bun-react-native`, usuń `bun-react-native/preload` z `bunfig.toml` i `"bun-react-native"` z pluginów
+`app.json` → toolchain wraca na Node (shebangi), `bun.lock` może zostać (Bun jako PM). Pojedyncze polecenie z Metro
+bez dodatków paczki: `BUN_RN_PATH=0`, `METRO_BUN_MINIFIER=0`; transformacje w wątkach Buna zamiast procesów:
+`METRO_BUN_WORKERS=threads`.

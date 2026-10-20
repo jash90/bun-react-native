@@ -1,0 +1,18 @@
+# Written by `bunx bun-react-native init`: every Bun process started in this app directory (Expo CLI, Metro, Jest,
+# the Gradle/Xcode bundling steps) loads the bun-react-native preload. Bun reads bunfig.toml only from the current
+# working directory, so it lives next to package.json (in a monorepo: in each app directory).
+preload = ["bun-react-native/preload"]
+
+# No automatic .env loading (like Node): Expo CLI loads .env.<mode> for the command's mode itself.
+env = false
+
+[install]
+# No auto-install at runtime: tools that probe global packages (Expo's sharp-cli lookup via require.resolve with global
+# `paths`) would make Bun install them on the fly, which breaks later module resolution in that process
+# (KNOWN-ISSUES #22). Node never installs on resolution either.
+auto = "disable"
+# The isolated linker duplicates Expo native modules (oven-sh/bun#29343).
+linker = "hoisted"
+# This repo only (not written by init): the public npm registry, so `expo install` (`bun add` here) does not record a
+# registry mirror from a personal ~/.npmrc in bun.lock - like the root bunfig.toml.
+registry = "https://registry.npmjs.org/"

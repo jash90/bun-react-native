@@ -2,7 +2,7 @@
 
 ## GitHub Actions — gotowe
 
-Plik: [`.github/workflows/mobile-bun.yml`](../../.github/workflows/mobile-bun.yml); hooki EAS w [`package.json`](../../package.json), profile w [`eas.json`](../../eas.json).
+Plik: [`.github/workflows/mobile-bun.yml`](../../.github/workflows/mobile-bun.yml); hooki EAS w [`package.json`](../../package.json), profile w [`eas.json`](../../example/eas.json).
 
 | Element | Jak | Status |
 |---|---|---|
@@ -32,13 +32,15 @@ to nie wpływa na toolchain aplikacji, o ile shim jest pierwszy na PATH.
 
 ### „100% Bun” na EAS — konfiguracja proponowana (NIEZWERYFIKOWANA na EAS)
 
-Obrazy EAS mają Node, a natywne kroki (`pod install`, Gradle) wołają `node`. Żeby trafiały w shim:
+Obrazy EAS mają Node, a natywne kroki (`pod install`, Gradle) wołają `node`. Żeby trafiały w shim, `bunx
+bun-react-native init` dopisuje hook uruchamiany po instalacji zależności (przed instalacją paczki jeszcze nie ma —
+KNOWN-ISSUES #20):
 
 ```jsonc
 // package.json
 "scripts": {
-  "eas-build-pre-install": "chmod +x tools/bin/node && set-env PATH \"$EAS_BUILD_WORKINGDIR/tools/bin:$PATH\"",
-  "eas-build-post-install": "node -p \"process.versions.bun\""   // asercja: musi wypisać wersję Buna
+  // set-env PATH "<node_modules/bun-react-native/tools/bin>:$PATH" + asercja, że shim uruchamia Buna
+  "eas-build-post-install": "bun-react-native eas-build-post-install"
 }
 ```
 ```jsonc
@@ -48,7 +50,7 @@ Obrazy EAS mają Node, a natywne kroki (`pod install`, Gradle) wołają `node`. 
 
 Niewiadome (do sprawdzenia pierwszym buildem EAS; nie uruchamiano, bo EAS wymaga konta i jest płatny):
 1. czy `set-env PATH` nadpisuje PATH dla faz install/prebuild/pod install/Gradle (dokumentacja mówi ogólnie o zmiennych);
-2. ścieżka repo w monorepo (`EAS_BUILD_WORKINGDIR` wskazuje katalog projektu — dopasuj ścieżkę do `tools/bin`);
+2. czy w monorepo hook trafia na paczkę (ścieżka shima liczona z położenia paczki, nie z `EAS_BUILD_WORKINGDIR`);
 3. oven-sh/bun#33520 — patche (`patchedDependencies`) mogą nie zostać zaaplikowane przy ciepłym cache EAS:
    dodaj asercję w `eas-build-post-install` (np. `grep` znacznika z patcha w `node_modules`);
 4. expo/eas-cli#3126 — monorepo z lokalnymi modułami (zamknięte „not planned”).

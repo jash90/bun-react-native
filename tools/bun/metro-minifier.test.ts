@@ -60,7 +60,7 @@ describe('metro-minifier (Bun)', () => {
   test('composes the source map: minified identifiers map back to their original position', async () => {
     const map = identityMap(strictModule);
     const { code, map: out } = await minify(options(strictModule, map));
-    expect(out.sources).toEqual([filename]);
+    expect(out!.sources).toEqual([filename]);
     const tm = new TraceMap(out as any);
     // `.round(` survives minification (property access); its column is after the inserted directive.
     const col = code.indexOf('.round(') + 1;

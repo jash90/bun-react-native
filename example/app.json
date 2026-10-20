@@ -35,8 +35,7 @@
           "imageWidth": 76
         }
       ],
-      "./plugins/with-bun-xcode-env",
-      "./plugins/with-bun-bundler"
+      "bun-react-native"
     ],
     "experiments": {
       "typedRoutes": true,

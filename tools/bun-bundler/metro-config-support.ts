@@ -1,4 +1,6 @@
-// What of the project's `metro.config.js` the Bun bundler honours, and when it hands the command to Metro instead.
+// Which engine bundles a command. Default: Metro on the Bun runtime (1:1 with Node by construction). RN_BUNDLER=bun
+// selects the Bun bundler, unless the project needs Metro - what of the project's `metro.config.js` the Bun bundler
+// honours, and when it hands the command to Metro instead:
 //
 // The user config (`metro.config.js`, plain object export) is compared with Expo's `getDefaultConfig(projectRoot)`:
 //   honoured by the Bun bundler  resolver.sourceExts, resolver.assetExts, transformer.babelTransformerPath
@@ -46,16 +48,27 @@ export function metroEngineDecision(projectRoot: string): MetroEngineDecision {
   return decision;
 }
 
-/** Prints why a command is bundled with Metro; true when it is */
+/** RN_BUNDLER=bun selects the Bun bundler; Metro on the Bun runtime is the default engine */
+export function bunBundlerRequested(env: NodeJS.ProcessEnv = process.env) {
+  return env.RN_BUNDLER === 'bun';
+}
+
+/** True when a command is bundled with Metro: the default, or the Bun bundler cannot take the project (says why) */
 export function usesMetroEngine(projectRoot: string, command: string): boolean {
+  if (!bunBundlerRequested()) return true;
   const decision = metroEngineDecision(projectRoot);
   if (decision.engine === 'bun') return false;
   console.log(`\x1b[2mBun bundler: ${command} runs on Metro (Bun runtime) - ${decision.reasons.join(', ')}\x1b[22m`);
   return true;
 }
 
+/** Expo SDK majors the Bun bundler is verified with (SDK 58 changed web chunking and the .routes.json export) */
+const BUN_BUNDLER_SDKS = [57];
+
 function decide(root: string): MetroEngineDecision {
   const req = createRequire(path.join(root, 'package.json'));
+  const sdk = Number(String(req('expo/package.json').version).split('.')[0]);
+  if (!BUN_BUNDLER_SDKS.includes(sdk)) return { engine: 'metro', reasons: [`Expo SDK ${sdk} (the Bun bundler supports SDK ${BUN_BUNDLER_SDKS.join(', ')})`] };
   const { exp } = req('@expo/config').getConfig(root, { skipSDKVersionRequirement: true });
   if (exp?.experiments?.reactServerFunctions || exp?.experiments?.reactServerComponentRoutes) {
     return { engine: 'metro', reasons: ['React Server Components'] };
