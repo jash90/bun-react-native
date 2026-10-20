@@ -97,3 +97,9 @@ npm po v1 (do tego czasu `github:jash90/bun-react-native`); zgłoszenie błędó
    skrypt `lint` z `package.json` zamiast wbudowanego narzędzia; (b) testy komponentów aplikacji na `bun test` — blokuje
    Flow w `react-native/index.js` (oven-sh/bun#16945); Jest dalej działa na runtime Buna.
 
+10. Prototyp `bun test` dla testów komponentów (gałąź `proto/bun-test`, `207f02b`, niewypchnięta): 8/8 testów
+   przykładu przechodzi pod `bun test` bez zmian w testach i `.snap` (ciepło 0,8 s vs 1,85 s Jest), ale preload (~400
+   linii) odtwarza fragment jest-runtime i jest-snapshot. Powody po stronie Buna 1.4.3: wynik `onLoad` w CommonJS jest
+   pusty (oven-sh/bun#44701), `onResolve` nie widzi ścieżek bez rozszerzenia jak `./Platform` (oven-sh/bun#44603),
+   brak `expect.addSnapshotSerializer` (oven-sh/bun#1825) — dopisane komentarze z przykładami. Decyzja: Jest na
+   runtime Buna zostaje; wrócić do tematu po poprawkach w Bunie.
