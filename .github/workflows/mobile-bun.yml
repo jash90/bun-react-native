@@ -188,7 +188,7 @@ jobs:
           cmp out-node/index.android.bundle out-bun/index.android.bundle
           diff -r out-node/assets out-bun/assets
           # .hbc: same names (= same JS); contents differ by Expo's random hermesc temp path (KNOWN-ISSUES #16)
-          if diff -rq export-node export-bun | grep -v '\.hbc differ$' | grep .; then exit 1; fi
+          diff -rq export-node export-bun > export.diff || [ $? -eq 1 ]; if grep -v '\.hbc differ$' export.diff; then exit 1; fi
 
   # Next Expo SDK (expo@next, SDK 58): the toolchain on a copy of the example upgraded with `expo install --fix`.
   # The example's own code targets SDK 57 (typecheck/Jest are not run here); this checks bundling only.
@@ -237,4 +237,4 @@ jobs:
           NODE="$(command -v node)"
           METRO_BUN_MINIFIER=0 TMPDIR=$PWD/tmp-node "$NODE" --require "$GITHUB_WORKSPACE/scripts/node-export-order.cjs" node_modules/expo/bin/cli export --output-dir export-node
           METRO_BUN_MINIFIER=0 TMPDIR=$PWD/tmp-bun bun expo export --output-dir export-bun
-          if diff -rq export-node export-bun | grep -v '\.hbc differ$' | grep .; then exit 1; fi
+          diff -rq export-node export-bun > export.diff || [ $? -eq 1 ]; if grep -v '\.hbc differ$' export.diff; then exit 1; fi

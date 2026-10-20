@@ -30,7 +30,10 @@ if (process.versions.bun) {
       }
     }
     // Metro export: the web render function before the client bundle, so module IDs do not depend on a race
-    if (!bun && isExpoCli && command === 'export') require('./expo-export-order').install(root);
+    // (and DOM component bundles of export:embed in call order, like the Node reference in CI)
+    if (!bun && isExpoCli && (command === 'export' || command === 'export:embed')) {
+      require('./expo-export-order').install(root);
+    }
     if (!bun && isExpoCli && command === 'export:embed' && process.env.RN_BUNDLER_RESET_CACHE !== '1') {
       process.argv = process.argv.filter((a, i) => i < 2 || a !== '--reset-cache');
     }

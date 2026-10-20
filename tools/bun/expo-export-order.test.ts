@@ -1,7 +1,7 @@
 // bun test - the fixed bundling order of `expo export` (KNOWN-ISSUES #21), on a stand-in for Expo's dev server
 import { expect, test } from 'bun:test';
 
-const { applyExportOrder } = require('./expo-export-order.js');
+const { applyExportOrder, orderedEngineChecks } = require('./expo-export-order.js');
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -135,4 +135,39 @@ test('installing twice does not wrap twice', () => {
   const wrapped = DevServer.prototype.nativeExportBundleAsync;
   applyExportOrder(DevServer.prototype);
   expect(DevServer.prototype.nativeExportBundleAsync).toBe(wrapped);
+});
+
+test('Hermes engine checks in call order: the platforms reach the bundle queue in platform order', async () => {
+  const log: string[] = [];
+  const dev = server(log);
+  // with ios/ and android/ the checks read a native file each; here the first platform's read is the slow one
+  const hermes = orderedEngineChecks({
+    async assertEngineMismatchAsync(_root: string, _exp: unknown, platform: string) {
+      await sleep(platform === 'ios' ? 30 : 1);
+    },
+    get isEnableHermesManaged() {
+      return () => true;
+    },
+  });
+  // like export/exportApp.js
+  await Promise.all(
+    ['ios', 'android'].map(async (platform) => {
+      await hermes.assertEngineMismatchAsync('/app', {}, platform);
+      return dev.nativeExportBundleAsync({}, { platform });
+    }),
+  );
+  expect(log).toEqual(['start ios', 'end ios', 'start android', 'end android']);
+  expect(hermes.isEnableHermesManaged()).toBe(true);
+});
+
+test('a failing engine check rejects its own caller only', async () => {
+  const hermes = orderedEngineChecks({
+    async assertEngineMismatchAsync(_root: string, _exp: unknown, platform: string) {
+      if (platform === 'ios') throw new Error('mismatch');
+    },
+  });
+  const ios = hermes.assertEngineMismatchAsync('/app', {}, 'ios');
+  const android = hermes.assertEngineMismatchAsync('/app', {}, 'android');
+  await expect(ios).rejects.toThrow('mismatch');
+  await expect(android).resolves.toBeUndefined();
 });
