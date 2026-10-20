@@ -173,6 +173,7 @@ bezpośrednio. Lista miejsc: [VERIFICATION.md § Wywołania node](VERIFICATION.m
 
 Workflow: [`.github/workflows/mobile-bun.yml`](../../.github/workflows/mobile-bun.yml)
 (`oven-sh/setup-bun@v2` + shim na `$GITHUB_PATH` + krok `assert-no-node` + job porównujący bundle Node vs Bun).
+Wersja Buna pochodzi z pola `packageManager` w `package.json` (`bun-version-file: package.json`), zmienna `BUN_VERSION` została usunięta.
 
 ## 8. EAS Build
 

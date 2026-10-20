@@ -77,6 +77,7 @@ The package lives at the repository root. `example/` is an Expo app that uses it
 ```bash
 bun install          # workspace install; links the package into the example app
 bun test             # the package's own tests (tools/)
+bun run typecheck:tools   # bun check of the package code (tools/)
 cd example && bun expo start
 ```
 

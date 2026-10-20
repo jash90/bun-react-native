@@ -354,7 +354,7 @@ export async function startDevServer(opts: DevServerOptions) {
     idleTimeout: 0,
     async fetch(request, srv) {
       // clients that send no Host header (e.g. React Native's packager status check) get a relative request URL
-      if (!/^https?:/.test(request.url)) request = new Request(new URL(request.url, `http://localhost:${port}`), request);
+      if (!/^https?:/.test(request.url)) request = new Request(new URL(request.url, `http://localhost:${port}`).href, request);
       // Expo's CORS middleware first: cross-origin requests from foreign sites are rejected like in Metro
       const cors = opts.cors?.(request);
       if (cors?.error) return new Response(cors.error, { status: 500 });

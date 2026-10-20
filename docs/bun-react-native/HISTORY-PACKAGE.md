@@ -89,4 +89,11 @@ npm po v1 (do tego czasu `github:jash90/bun-react-native`); zgłoszenie błędó
    kolejka zakleszczała każdy eksport (fikstura DOM zawisła) — kolejka reentrant przez `AsyncLocalStorage`, test
    regresji (bez poprawki: zakleszczenie). Fikstura DOM: eksport iOS 2× identyczny łącznie z `www.bundle`; CI na
    `40ba8ff` zielone.
+9. Typy i wersja Buna: `bun run typecheck:tools` = `bun check -p tools` (type checker Buna, `tools/tsconfig.json`,
+   devDependency `@types/bun`, pliki `.d.ts` dla `tools/bun/metro-require.js` i `tools/bun/metro-minifier.js`); job
+   `checks` w CI uruchamia go po `bun test`. `example/scripts/reset-project.js` działa na Bunie (`#!/usr/bin/env bun`).
+   CI czyta wersję Buna z `packageManager` (`bun-version-file: package.json`), zmienna `BUN_VERSION` usunięta.
+   Celowo nie zrobione: (a) `bun lint` — wymaga Bun 1.4.4, którego jeszcze nie ma w wydaniu, a `bun lint` uruchomiłby
+   skrypt `lint` z `package.json` zamiast wbudowanego narzędzia; (b) testy komponentów aplikacji na `bun test` — blokuje
+   Flow w `react-native/index.js` (oven-sh/bun#16945); Jest dalej działa na runtime Buna.
 

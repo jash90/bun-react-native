@@ -42,7 +42,11 @@
   "scripts": {
     "test": "bun test",
     "typecheck": "bun run --cwd example typecheck",
+    "typecheck:tools": "bun check -p tools",
     "lint": "bun run --cwd example lint",
     "test:example": "bun run --cwd example test"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.3"
   }
 }

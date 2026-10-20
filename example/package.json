@@ -18,7 +18,7 @@
     "typecheck": "bun check",
     "typecheck:tsc": "tsc --noEmit",
     "test": "jest",
-    "reset-project": "node ./scripts/reset-project.js",
+    "reset-project": "bun ./scripts/reset-project.js",
     "eas-build-post-install": "bun-react-native eas-build-post-install"
   },
   "dependencies": {

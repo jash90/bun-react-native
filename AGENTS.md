@@ -63,6 +63,7 @@ Docs: https://docs.expo.dev/eas/index.md
   Transformer/serializer for native, so dev bundles, maps and HMR are Metro's byte for byte). Projects with React Server
   Components or `metro.config.js` customizations beyond `sourceExts`/`assetExts`/`babelTransformerPath` stay on Metro
   (`tools/bun-bundler/metro-config-support.ts`). Details: `docs/bun-react-native/BUNDLER.md`.
+- `tools/` is type-checked with Bun's checker: `bun run typecheck:tools` (`bun check -p tools`, `tools/tsconfig.json`); keep it at 0 errors.
 - `tools/bun/metro-minifier.js` replaces terser in Metro (web exports; `METRO_BUN_MINIFIER=0` keeps terser); after
   changing it run `bun test` and check `hermesc` still compiles a minified bundle.
 - After changing bundling code: `bun test`, in `example/` bundle both platforms (`bun expo export:embed`), compile with
